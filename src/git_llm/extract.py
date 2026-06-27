@@ -1,0 +1,216 @@
+"""
+Extract Zettelkasten artifacts from labeled chats.
+
+Two artifact kinds:
+    - knowledge: triggered by Educational / Reflective / (Pragmatic+Warning)
+                 turns. Atomic concept notes.
+    - adr:       triggered by sequences matching ADR_TRIGGER_SEQUENCES, e.g.
+                 Pivoting -> Pragmatic -> Synthesizing.
+
+Each artifact is a Markdown file with YAML frontmatter (Obsidian-compatible).
+A unique Zettel ID (YYYYMMDDHHMM-slug) ensures stable backlinks.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+from slugify import slugify
+
+from git_llm.taxonomy import ADR_TRIGGER_SEQUENCES, KNOWLEDGE_TRIGGERS
+
+
+@dataclass(slots=True)
+class ExtractedArtifact:
+    kind: str
+    title: str
+    body: str
+    zk_id: str
+    turn_start: int
+    turn_end: int
+    labels: list[str]
+    file_path: Path | None = None
+
+
+def _labels_for_chat(conn: sqlite3.Connection, chat_id: int) -> dict[int, list[str]]:
+    rows = conn.execute(
+        """
+        SELECT t.idx AS idx, l.name AS name
+        FROM turns t
+        JOIN labels l ON l.turn_id = t.id
+        WHERE t.chat_id = ?
+        ORDER BY t.idx
+        """,
+        (chat_id,),
+    ).fetchall()
+    out: dict[int, list[str]] = defaultdict(list)
+    for r in rows:
+        out[r["idx"]].append(r["name"])
+    return out
+
+
+def _turn_content(conn: sqlite3.Connection, chat_id: int, idx: int) -> str:
+    row = conn.execute(
+        "SELECT content FROM turns WHERE chat_id = ? AND idx = ?",
+        (chat_id, idx),
+    ).fetchone()
+    return row["content"] if row else ""
+
+
+def _zk_id(title: str, when: datetime | None = None) -> str:
+    when = when or datetime.utcnow()
+    return f"{when.strftime('%Y%m%d%H%M%S')}-{slugify(title)[:60]}"
+
+
+def _matches_trigger(labels: list[str], trigger: tuple[str, ...]) -> bool:
+    return any(name in trigger for name in labels)
+
+
+def _derive_title(content: str, fallback: str) -> str:
+    for line in content.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if 10 <= len(stripped) <= 80:
+            return stripped
+    return fallback
+
+
+def extract_knowledge(
+    conn: sqlite3.Connection, chat_id: int
+) -> list[ExtractedArtifact]:
+    """One knowledge note per qualifying turn."""
+    turn_labels = _labels_for_chat(conn, chat_id)
+    artifacts: list[ExtractedArtifact] = []
+    seen_zk: set[str] = set()
+
+    for idx in sorted(turn_labels):
+        labels = turn_labels[idx]
+        if not any(_matches_trigger(labels, trig) for trig in KNOWLEDGE_TRIGGERS):
+            continue
+        content = _turn_content(conn, chat_id, idx)
+        title = _derive_title(content, f"Knowledge from turn {idx}")
+        zk_id = _zk_id(title, datetime.utcnow())
+        # disambiguate within same second
+        suffix = 0
+        base = zk_id
+        while zk_id in seen_zk:
+            suffix += 1
+            zk_id = f"{base}-{suffix}"
+        seen_zk.add(zk_id)
+        artifacts.append(
+            ExtractedArtifact(
+                kind="knowledge",
+                title=title,
+                body=content,
+                zk_id=zk_id,
+                turn_start=idx,
+                turn_end=idx,
+                labels=labels,
+            )
+        )
+    return artifacts
+
+
+def extract_adrs(conn: sqlite3.Connection, chat_id: int) -> list[ExtractedArtifact]:
+    """Detect ADR-worthy sequences and emit a single note per match."""
+    turn_labels = _labels_for_chat(conn, chat_id)
+    indices = sorted(turn_labels)
+    artifacts: list[ExtractedArtifact] = []
+    seen_zk: set[str] = set()
+
+    for sequence in ADR_TRIGGER_SEQUENCES:
+        i = 0
+        while i <= len(indices) - len(sequence):
+            window = indices[i : i + len(sequence)]
+            if all(
+                _matches_trigger(turn_labels[window[k]], sequence[k])
+                for k in range(len(sequence))
+            ):
+                # Merge content across the window
+                joined = "\n\n---\n\n".join(
+                    _turn_content(conn, chat_id, j) for j in window
+                )
+                title = _derive_title(joined, f"ADR from turns {window[0]}-{window[-1]}")
+                zk_id = _zk_id("ADR-" + title, datetime.utcnow())
+                base = zk_id
+                suffix = 0
+                while zk_id in seen_zk:
+                    suffix += 1
+                    zk_id = f"{base}-{suffix}"
+                seen_zk.add(zk_id)
+                merged_labels: list[str] = []
+                for j in window:
+                    merged_labels.extend(turn_labels[j])
+                artifacts.append(
+                    ExtractedArtifact(
+                        kind="adr",
+                        title=title,
+                        body=joined,
+                        zk_id=zk_id,
+                        turn_start=window[0],
+                        turn_end=window[-1],
+                        labels=sorted(set(merged_labels)),
+                    )
+                )
+                i += len(sequence)  # consume window
+            else:
+                i += 1
+    return artifacts
+
+
+def render_markdown(artifact: ExtractedArtifact, chat_id: int) -> str:
+    frontmatter = {
+        "id": artifact.zk_id,
+        "kind": artifact.kind,
+        "created": datetime.utcnow().date().isoformat(),
+        "source_chat": chat_id,
+        "source_turns": list(range(artifact.turn_start, artifact.turn_end + 1)),
+        "labels": sorted(set(artifact.labels)),
+    }
+    fm = yaml.safe_dump(frontmatter, sort_keys=False).strip()
+    return f"---\n{fm}\n---\n\n# {artifact.title}\n\n{artifact.body}\n"
+
+
+def write_artifacts(
+    conn: sqlite3.Connection,
+    chat_id: int,
+    artifacts: list[ExtractedArtifact],
+    out_dir: Path,
+) -> list[ExtractedArtifact]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for art in artifacts:
+        sub = out_dir / ("adrs" if art.kind == "adr" else "notes")
+        sub.mkdir(parents=True, exist_ok=True)
+        path = sub / f"{art.zk_id}.md"
+        path.write_text(render_markdown(art, chat_id), encoding="utf-8")
+        art.file_path = path
+        conn.execute(
+            "INSERT OR IGNORE INTO artifacts "
+            "(chat_id, kind, title, body, zk_id, turn_start, turn_end, labels, file_path, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                chat_id,
+                art.kind,
+                art.title,
+                art.body,
+                art.zk_id,
+                art.turn_start,
+                art.turn_end,
+                ",".join(sorted(set(art.labels))),
+                str(path.resolve()),
+                datetime.utcnow().isoformat(),
+            ),
+        )
+    conn.commit()
+    return artifacts
+
+
+def extract_all(
+    conn: sqlite3.Connection, chat_id: int, out_dir: Path
+) -> list[ExtractedArtifact]:
+    artifacts = extract_knowledge(conn, chat_id) + extract_adrs(conn, chat_id)
+    return write_artifacts(conn, chat_id, artifacts, out_dir)
