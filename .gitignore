@@ -13,3 +13,4 @@ build/
 *.sqlite-shm
 .DS_Store
 zettel/
+.idea
