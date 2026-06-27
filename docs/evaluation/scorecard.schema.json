@@ -1,0 +1,194 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "git-llm evaluation scorecard (machine-readable)",
+  "description": "Fill this in after running docs/evaluation/run.sh. Mirrors scorecard.md 1:1.",
+  "type": "object",
+  "required": ["evaluator", "date", "git_sha", "scenarios", "composite"],
+  "properties": {
+    "evaluator": {
+      "type": "string",
+      "description": "Human name OR LLM model id (e.g. 'claude-sonnet-4.5')"
+    },
+    "evaluator_kind": { "enum": ["human", "ai"] },
+    "date": { "type": "string", "format": "date" },
+    "git_sha": { "type": "string" },
+    "eval_run_dir": { "type": "string" },
+
+    "scenarios": {
+      "type": "object",
+      "required": ["ingestion", "labeling", "phases", "search", "extraction", "cross_chat", "meta_test"],
+      "properties": {
+
+        "ingestion": {
+          "type": "object",
+          "properties": {
+            "checks": {
+              "type": "object",
+              "properties": {
+                "ing_1_both_sessions": { "$ref": "#/definitions/passfail" },
+                "ing_2_user_prompt_count": { "$ref": "#/definitions/passfail" },
+                "ing_3_parent_chain": { "$ref": "#/definitions/passfail" },
+                "ing_4_thinking_indexed": { "$ref": "#/definitions/passfail" },
+                "ing_5_idempotent": { "$ref": "#/definitions/passfail" }
+              }
+            },
+            "score": { "$ref": "#/definitions/unit" }
+          }
+        },
+
+        "labeling": {
+          "type": "object",
+          "properties": {
+            "checks": {
+              "type": "object",
+              "properties": {
+                "lab_1_no_off_taxonomy": { "$ref": "#/definitions/passfail" },
+                "lab_2_every_turn_labeled": { "$ref": "#/definitions/passfail" },
+                "lab_3_stub_kappa": { "type": "number" },
+                "lab_4_llm_kappa": { "type": "number" },
+                "lab_5_master_class_agreement": { "type": "number" }
+              }
+            },
+            "per_prompt": {
+              "type": "array",
+              "description": "Per-prompt label agreement, P1..P11",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "n": { "type": "integer", "minimum": 1, "maximum": 11 },
+                  "gold": { "type": "array", "items": { "type": "string" } },
+                  "stub": { "type": "array", "items": { "type": "string" } },
+                  "llm":  { "type": "array", "items": { "type": "string" } },
+                  "stub_match": { "type": "boolean" },
+                  "llm_match":  { "type": "boolean" }
+                }
+              }
+            },
+            "score": { "$ref": "#/definitions/unit" }
+          }
+        },
+
+        "phases": {
+          "type": "object",
+          "properties": {
+            "actual_boundaries": { "type": "array", "items": { "type": "integer" } },
+            "expected_boundaries": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "default": [2, 3, 5, 8, 10]
+            },
+            "boundary_match_count": { "type": "integer" },
+            "narrative_coherence_likert": { "type": "number", "minimum": 1, "maximum": 5 },
+            "score": { "$ref": "#/definitions/unit" }
+          }
+        },
+
+        "search": {
+          "type": "object",
+          "properties": {
+            "per_query": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "expected_prompts": { "type": "array", "items": { "type": "integer" } },
+                  "actual_rank_of_first_expected": { "type": ["integer", "null"] },
+                  "in_top_3": { "type": "boolean" }
+                }
+              }
+            },
+            "top1_recall": { "$ref": "#/definitions/unit" },
+            "top3_recall": { "$ref": "#/definitions/unit" },
+            "label_filter_precision": { "$ref": "#/definitions/passfail" },
+            "cross_chat_pass": { "$ref": "#/definitions/passfail" },
+            "score": { "$ref": "#/definitions/unit" }
+          }
+        },
+
+        "extraction": {
+          "type": "object",
+          "properties": {
+            "generated_files": { "type": "array", "items": { "type": "string" } },
+            "per_gold_artifact": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "source_prompt": { "type": "integer" },
+                  "file_found": { "type": "boolean" },
+                  "phrases_present": { "type": "boolean" },
+                  "utility_likert": { "type": "number", "minimum": 1, "maximum": 5 }
+                }
+              }
+            },
+            "precision": { "$ref": "#/definitions/unit" },
+            "recall": { "$ref": "#/definitions/unit" },
+            "mean_utility": { "type": "number" },
+            "false_positives": { "type": "array", "items": { "type": "string" } },
+            "score": { "$ref": "#/definitions/unit" }
+          }
+        },
+
+        "cross_chat": {
+          "type": "object",
+          "properties": {
+            "checks": {
+              "type": "object",
+              "properties": {
+                "crs_1_query_spans_chats": { "$ref": "#/definitions/passfail" },
+                "crs_2_stable_chat_ids":   { "$ref": "#/definitions/passfail" },
+                "crs_3_scoped_import":     { "$ref": "#/definitions/passfail" }
+              }
+            },
+            "score": { "$ref": "#/definitions/unit" }
+          }
+        },
+
+        "meta_test": {
+          "type": "object",
+          "properties": {
+            "checks": {
+              "type": "object",
+              "properties": {
+                "met_1_p10_extracted": { "$ref": "#/definitions/passfail" },
+                "met_2_p11_labeled_correctly": { "$ref": "#/definitions/passfail" },
+                "met_3_parallel_pattern_likert": { "type": "number", "minimum": 1, "maximum": 5 }
+              }
+            },
+            "self_recognition_achieved": {
+              "type": "boolean",
+              "description": "True iff met_1 AND met_2 both pass"
+            },
+            "score": { "$ref": "#/definitions/unit" }
+          }
+        }
+      }
+    },
+
+    "composite": {
+      "type": "object",
+      "properties": {
+        "weighted_total": { "$ref": "#/definitions/unit" },
+        "grade": { "enum": ["green", "yellow", "red"] },
+        "veto_triggered": { "type": "boolean" },
+        "veto_reason": { "type": ["string", "null"] }
+      }
+    },
+
+    "findings": {
+      "type": "object",
+      "properties": {
+        "wins": { "type": "array", "items": { "type": "string" }, "maxItems": 3 },
+        "gaps": { "type": "array", "items": { "type": "string" }, "maxItems": 3 },
+        "next_iteration": { "type": "string" }
+      }
+    }
+  },
+
+  "definitions": {
+    "passfail": { "enum": ["pass", "fail", "n/a"] },
+    "unit": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+  }
+}

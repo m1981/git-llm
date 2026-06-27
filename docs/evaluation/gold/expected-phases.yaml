@@ -1,0 +1,63 @@
+# Gold narrative arc for session 2 — used by phases scenario.
+#
+# A human evaluator confirms whether `gitllm phases` produces ≥3 phases
+# whose boundaries fall within ±1 turn of these and whose summaries match.
+
+session_id: "019f0b65-149c-7528-8c8b-1f754cc9d84a"
+
+# Note: turn numbers below are USER-PROMPT-INDEXED (P1..P11), not raw line indices.
+# The phases tool may operate on full turns (incl. assistant turns); evaluator
+# maps assistant turns to their preceding user prompt for boundary checks.
+
+phases:
+  - id: phase-1
+    name: "Concept exposition"
+    user_prompt_range: [1, 2]
+    flow: "[Expositive: Inquiring] → [Verdictive: Educational] → [Behabitive: Challenging]"
+    summary: >
+      User asks what Speech Act / MIDAS / Zettelkasten mean; then asks whether
+      the AI's earlier conversation was pragmatic. Surface critique of
+      theory-creep.
+
+  - id: phase-2
+    name: "Implementation kickoff"
+    user_prompt_range: [3, 3]
+    flow: "[Exercitive: Directing] → [Commissive: Structuring]"
+    summary: >
+      User greenlights build; AI scaffolds taxonomy + CLI + storage + tests.
+
+  - id: phase-3
+    name: "Source-format pivot"
+    user_prompt_range: [4, 5]
+    flow: "[Exercitive: Pivoting] → [Verdictive: Analytical] → [Expositive: Providing-Context] → [Commissive: Structuring]"
+    summary: >
+      User challenges markdown fragility, asks about JSONL, then shares the
+      pi.dev session format. AI converges on canonical JSONL with pi-native
+      auto-detection.
+
+  - id: phase-4
+    name: "Parallel-write execution"
+    user_prompt_range: [6, 8]
+    flow: "[Exercitive: Directing] → [Commissive: Prescriptive] → [Expositive: Clarifying]"
+    summary: >
+      User repeatedly instructs to batch writes and verify with one test run.
+      Recurring behavioral pattern.
+
+  - id: phase-5
+    name: "Documentation alignment"
+    user_prompt_range: [9, 10]
+    flow: "[Exercitive: Directing] → [Behabitive: Reflective] → [Commissive: Synthesizing]"
+    summary: >
+      User checks architecture doc freshness; then commissions the
+      value-proposition document with non-technical theory explainer.
+
+  - id: phase-6
+    name: "Evaluation design"
+    user_prompt_range: [11, 11]
+    flow: "[Exercitive: Directing] → [Behabitive: Reflective] → [Commissive: Structuring]"
+    summary: >
+      User commissions a black-box evaluation protocol with dogfood corpus.
+      The meta-loop closes.
+
+# Phase boundaries the tool should detect (between which user-prompt indices):
+expected_boundaries_after_prompt: [2, 3, 5, 8, 10]

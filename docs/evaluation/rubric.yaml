@@ -1,0 +1,207 @@
+# =============================================================================
+# git-llm Evaluation Rubric — single source of truth
+# =============================================================================
+# Drives BOTH the human Markdown scorecard and the AI JSON scorecard.
+# Each scenario has: weight, objective_checks (auto), subjective_checks (human/LLM),
+# and a pass_threshold.
+#
+# Score conventions:
+#   - Objective checks: 0.0 (fail) or 1.0 (pass), occasionally fractional
+#   - Subjective checks: 1-5 Likert, normalized to 0.0-1.0 in composite
+# =============================================================================
+
+version: 1
+corpus:
+  sessions:
+    - id: session-1
+      path: "~/.pi/agent/sessions/--Users-michal-PycharmProjects-git-llm--/2026-06-27T15-01-05*.jsonl"
+      lines: 196
+    - id: session-2
+      path: "~/.pi/agent/sessions/--Users-michal-PycharmProjects-git-llm--/2026-06-27T23-23-21*.jsonl"
+      lines: 213
+      user_prompts: 11   # objectively verified — see gold/session-2-prompts.yaml
+
+# -----------------------------------------------------------------------------
+scenarios:
+
+  ingestion:
+    weight: 0.10
+    description: "Does `gitllm import-pi` capture the corpus losslessly?"
+    objective_checks:
+      - id: ing.1
+        name: both_sessions_imported
+        check: "gitllm search returns chats with both session_ids"
+        score: pass_fail
+      - id: ing.2
+        name: user_prompt_count_session2
+        check: "Session 2 has exactly 11 user-role turns (excluding tool_result)"
+        score: pass_fail
+        expected: 11
+      - id: ing.3
+        name: parent_chain_preserved
+        check: "Every non-root turn has a parent_id resolvable in the same chat"
+        score: pass_fail
+      - id: ing.4
+        name: thinking_blocks_indexed
+        check: "FTS search for distinctive thinking text returns the parent turn"
+        score: pass_fail
+      - id: ing.5
+        name: idempotent_reimport
+        check: "Running `gitllm import-pi --all` twice yields no duplicates"
+        score: pass_fail
+    pass_threshold: 0.80   # 4/5 checks
+
+  labeling:
+    weight: 0.25
+    description: "Do labels (StubLabeler AND LLMLabeler) agree with human gold?"
+    objective_checks:
+      - id: lab.1
+        name: no_off_taxonomy_labels
+        check: "Every label in DB belongs to the 20-label dictionary"
+        score: pass_fail
+      - id: lab.2
+        name: every_turn_labeled
+        check: "Zero turns left with NULL label after `gitllm label <chat>`"
+        score: pass_fail
+    subjective_checks:
+      - id: lab.3
+        name: stub_vs_human_kappa
+        check: "Cohen's kappa, StubLabeler vs. human gold on 20-turn sample"
+        score: numeric
+        scale: "kappa: <0.2 poor, 0.2-0.4 fair, 0.4-0.6 moderate, 0.6+ good"
+        target: 0.4
+      - id: lab.4
+        name: llm_vs_human_kappa
+        check: "Cohen's kappa, LLMLabeler vs. human gold on same 20-turn sample"
+        score: numeric
+        target: 0.6
+      - id: lab.5
+        name: master_class_agreement
+        check: "Austin master-class agreement (coarser, should be higher)"
+        score: numeric
+        target: 0.7
+    pass_threshold: 0.65
+
+  phases:
+    weight: 0.15
+    description: "Does the macro-phase map match the actual narrative arc?"
+    objective_checks:
+      - id: phs.1
+        name: phases_produced
+        check: "`gitllm phases <chat>` returns ≥3 phases for session 2"
+        score: pass_fail
+    subjective_checks:
+      - id: phs.2
+        name: boundary_alignment
+        check: "Phase boundaries within ±1 turn of gold (expected-phases.yaml)"
+        score: numeric
+        scale: "fraction of gold boundaries matched"
+        target: 0.6
+      - id: phs.3
+        name: narrative_coherence
+        check: "Each phase summary is a faithful one-line description"
+        score: likert_5
+        target: 4
+    pass_threshold: 0.60
+
+  search:
+    weight: 0.15
+    description: "Can users find what they remember (by text, label, class)?"
+    objective_checks:
+      - id: srh.1
+        name: top1_recall
+        check: "Across 10 gold queries, target turn is rank 1"
+        score: numeric
+        target: 0.5
+      - id: srh.2
+        name: top3_recall
+        check: "Across 10 gold queries, target turn is in top 3"
+        score: numeric
+        target: 0.8
+      - id: srh.3
+        name: label_filter_precision
+        check: "`gitllm search --label Warning` returns only Warning turns"
+        score: pass_fail
+      - id: srh.4
+        name: cross_chat_search
+        check: "Searches without --chat-id span all imported chats"
+        score: pass_fail
+    pass_threshold: 0.70
+
+  extraction:
+    weight: 0.20
+    description: "Are extracted Zettel/ADR notes actually valuable?"
+    objective_checks:
+      - id: ext.1
+        name: artifacts_generated
+        check: "`gitllm extract <chat>` writes ≥1 file per expected artifact category"
+        score: pass_fail
+      - id: ext.2
+        name: zettel_frontmatter_valid
+        check: "Every generated .md has parseable YAML frontmatter with id, source_turn, labels"
+        score: pass_fail
+    subjective_checks:
+      - id: ext.3
+        name: precision
+        check: "Of generated zettels, fraction that are genuinely valuable (not noise)"
+        score: numeric
+        target: 0.7
+      - id: ext.4
+        name: recall
+        check: "Of gold zettels in expected-artifacts.yaml, fraction the system found"
+        score: numeric
+        target: 0.6
+      - id: ext.5
+        name: utility_score
+        check: "Mean utility rating per zettel (would you save it to Obsidian?)"
+        score: likert_5
+        target: 3.5
+    pass_threshold: 0.60
+
+  cross_chat:
+    weight: 0.10
+    description: "Does the tool work across multiple chats as a knowledge bank?"
+    objective_checks:
+      - id: crs.1
+        name: query_spans_chats
+        check: "Search for 'SQLModel' returns hits from both sessions if present"
+        score: pass_fail
+      - id: crs.2
+        name: stable_chat_ids
+        check: "Chat IDs persist across re-runs (idempotent)"
+        score: pass_fail
+      - id: crs.3
+        name: scoped_import
+        check: "`gitllm import-pi --all --repo git-llm` imports only this repo's sessions"
+        score: pass_fail
+    pass_threshold: 0.80
+
+  meta_test:
+    weight: 0.05   # bonus
+    description: "Does the system extract its own creation story? 🪞"
+    subjective_checks:
+      - id: met.1
+        name: extracts_value_prop_turn
+        check: "Knowledge note generated for the value-proposition writing turn (P10 of session 2)"
+        score: pass_fail
+      - id: met.2
+        name: labels_directing_request
+        check: "Current evaluation request (P11) labeled [Directing] + [Structuring]"
+        score: pass_fail
+      - id: met.3
+        name: identifies_parallel_write_pattern
+        check: "Recurring [Directing] pattern around 'parallel write' (P6, P7) detected as theme"
+        score: likert_5
+        target: 3
+    pass_threshold: 0.50   # genuinely hard — pass at any non-zero meta-recognition
+
+# -----------------------------------------------------------------------------
+composite:
+  formula: "weighted sum of per-scenario passes, normalized to [0,1]"
+  thresholds:
+    green: 0.80
+    yellow: 0.60
+    red: 0.0
+  veto:
+    - "Any scenario scoring below 0.40 vetoes a green grade"
+    - "Labeling kappa below 0.2 vetoes everything (taxonomy is broken)"

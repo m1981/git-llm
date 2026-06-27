@@ -1,0 +1,61 @@
+# Gold search queries for the search scenario.
+# Each query has a natural-language question, the actual `gitllm search`
+# command, and the user prompt index of the expected target turn.
+
+session_id: "019f0b65-149c-7528-8c8b-1f754cc9d84a"
+
+queries:
+  - id: q1
+    question: "Where did we decide JSONL beats markdown?"
+    command: "gitllm search --text 'jsonl fragile'"
+    expected_user_prompts: [4]
+    rationale: "Tests FTS on user's own wording"
+
+  - id: q2
+    question: "Where did we discuss the pi.dev session schema?"
+    command: "gitllm search --text 'pi-session-export'"
+    expected_user_prompts: [5]
+
+  - id: q3
+    question: "Find all turns where the user gave a direct instruction"
+    command: "gitllm search --label Directing"
+    expected_user_prompts: [3, 6, 7, 9, 10, 11]
+    rationale: "Label filter precision"
+
+  - id: q4
+    question: "Find every turn where the user pivoted scope"
+    command: "gitllm search --label Pivoting"
+    expected_user_prompts: [4]
+
+  - id: q5
+    question: "Where was the value proposition discussed?"
+    command: "gitllm search --text 'value proposition'"
+    expected_user_prompts: [10]
+
+  - id: q6
+    question: "Find Expositive-class turns about Zettelkasten"
+    command: "gitllm search --class Expositive --text zettelkasten"
+    expected_user_prompts: [1]
+    rationale: "Combined class + text filter"
+
+  - id: q7
+    question: "Where did the user reflect on past decisions?"
+    command: "gitllm search --label Reflective"
+    expected_user_prompts: [9, 10, 11]
+
+  - id: q8
+    question: "Find turns where the user provided file paths as context"
+    command: "gitllm search --label Providing-Context"
+    expected_user_prompts: [5]
+
+  - id: q9
+    question: "Where was the parallel-write workflow requested?"
+    command: "gitllm search --text 'parallel'"
+    expected_user_prompts: [6, 7]
+
+  - id: q10
+    question: "Cross-chat: find any discussion of Reflex framework"
+    command: "gitllm search --text Reflex"
+    expected_user_prompts: []   # In session 1 only — tests cross-chat retrieval
+    expected_session: "session-1"
+    rationale: "Critical cross-chat test"

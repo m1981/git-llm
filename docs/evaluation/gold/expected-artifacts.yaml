@@ -1,0 +1,82 @@
+# Gold artifacts the extractor SHOULD produce from session 2.
+# Used for precision/recall scoring of `gitllm extract`.
+#
+# Precision = (generated AND in this list) / generated
+# Recall    = (generated AND in this list) / |this list|
+
+session_id: "019f0b65-149c-7528-8c8b-1f754cc9d84a"
+
+artifacts:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Knowledge notes (atomic, single-concept, Zettelkasten-style)
+  # ───────────────────────────────────────────────────────────────────────────
+  - kind: knowledge-note
+    title: "Speech Act Theory — concept primer"
+    source_user_prompt: 1
+    rationale: "Educational explanation of Austin's framework, suitable as zettel"
+    must_contain_phrases:
+      - "Austin"
+      - "illocutionary"
+
+  - kind: knowledge-note
+    title: "Pragmatic pipeline vs. taxonomy theatre"
+    source_user_prompt: 2
+    rationale: "Reflective critique of theory-creep; high reuse value"
+    must_contain_phrases:
+      - "pipeline"
+      - "taxonomy"
+
+  - kind: knowledge-note
+    title: "Value proposition + non-technical theory explainer"
+    source_user_prompt: 10
+    rationale: "User-commissioned doc; high-signal knowledge atom"
+    must_contain_phrases:
+      - "value proposition"
+      - "Zettelkasten"
+      - "MIDAS"
+
+  - kind: knowledge-note
+    title: "Black-box evaluation protocol design"
+    source_user_prompt: 11
+    rationale: "Self-referential design artifact"
+    must_contain_phrases:
+      - "evaluation"
+      - "rubric"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ADRs (decision records — what/why/consequences)
+  # ───────────────────────────────────────────────────────────────────────────
+  - kind: adr
+    title: "Canonical source format = JSONL"
+    source_user_prompt: 4
+    rationale: "Explicit pivot from markdown; decision with consequences"
+    must_contain_phrases:
+      - "JSONL"
+      - "markdown"
+
+  - kind: adr
+    title: "Pi-native session schema as first-class ingest path"
+    source_user_prompt: 5
+    rationale: "Decision to preserve thinking/usage/parent_id losslessly"
+    must_contain_phrases:
+      - "pi"
+      - "thinking"
+      - "parent"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Behavioral patterns (cross-turn — bonus if detected)
+  # ───────────────────────────────────────────────────────────────────────────
+  - kind: pattern
+    title: "Recurring parallel-write directive"
+    source_user_prompts: [3, 6, 7]
+    rationale: "User repeatedly requests batched writes — a workflow preference worth surfacing"
+    bonus: true
+
+# Anti-gold: things the extractor should NOT promote to artifacts.
+# False-positive detector.
+anti_artifacts:
+  - source_user_prompt: 8
+    reason: "Pure clarification, not a knowledge atom or decision"
+
+  - source_user_prompt: 9
+    reason: "Doc-freshness check — operational, not knowledge-worthy"

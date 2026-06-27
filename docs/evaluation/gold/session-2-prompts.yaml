@@ -1,0 +1,86 @@
+# Gold list of user prompts in session 2 (objectively verified by JSONL parse).
+# Used by ingestion + labeling + meta-test scenarios.
+#
+# Each prompt is annotated with provisional gold labels for labeler evaluation.
+# IMPORTANT: gold labels here should be reviewed and corrected by the human
+# evaluator BEFORE running labeling kappa. They reflect the AI evaluator's
+# best guess, not divine truth.
+
+session_id: "019f0b65-149c-7528-8c8b-1f754cc9d84a"
+session_file: "2026-06-27T23-23-21-638Z_019f0b65-149c-7528-8c8b-1f754cc9d84a.jsonl"
+total_user_prompts: 11
+
+prompts:
+  - n: 1
+    text: "Please tellm what are those concepts about"
+    gold_labels: [Inquiring, Clarifying]
+    austin_class: Expositive
+    is_artifact_seed: false
+
+  - n: 2
+    text: "Please look on my problem (uaser) and AI thinking and tell me is guiding into a pragmatic solution @docs/initial-conversation.md"
+    gold_labels: [Seeking-Validation, Challenging]
+    austin_class: Behabitive
+    is_artifact_seed: true
+    expected_artifact: "knowledge-note: critique of theory-creep in AI advice"
+
+  - n: 3
+    text: "yes, please act as professional software architect and developer and proceed."
+    gold_labels: [Directing]
+    austin_class: Exercitive
+    is_artifact_seed: false
+
+  - n: 4
+    text: "btw. is this markdown format is not too fragile as an source format. How about json?"
+    gold_labels: [Challenging, Pivoting]
+    austin_class: Exercitive
+    is_artifact_seed: true
+    expected_artifact: "ADR: choose JSONL as canonical source format"
+
+  - n: 5
+    text: "Please check such jsonl structure and tell me does it have any advantages or your above is enough? /Users/michal/.pi/agent/skills/pi-session-export/*.jsonl"
+    gold_labels: [Providing-Context, Inquiring]
+    austin_class: Expositive
+    is_artifact_seed: true
+    expected_artifact: "ADR: pi-native session schema with thinking/usage/parent_id"
+
+  - n: 6
+    text: "Please think and do use write tool in parallel to write most changes at once. then use one turn to run tests to examine your shot"
+    gold_labels: [Directing]
+    austin_class: Exercitive
+    is_artifact_seed: false
+    note: "Recurring 'parallel-write' directive — pattern with P7"
+
+  - n: 7
+    text: "Pleas do one turn in parallel write  for c) as before"
+    gold_labels: [Directing]
+    austin_class: Exercitive
+    is_artifact_seed: false
+    note: "Recurring 'parallel-write' directive — pattern with P6"
+
+  - n: 8
+    text: "so do we use still use canonical format or you alwasy read form pi json?"
+    gold_labels: [Clarifying]
+    austin_class: Expositive
+    is_artifact_seed: false
+
+  - n: 9
+    text: "Please check @docs/architecture.md is up to date and contains all above reflections, decissions, etc."
+    gold_labels: [Directing, Reflective]
+    austin_class: Exercitive
+    is_artifact_seed: false
+
+  - n: 10
+    text: "Please think deeply and captrue to a markdown file a value prorposition and user goals. Secondly  explain to non technical how those Austin, Zettelkasten, MIDAS, etc. are really goint to help to achieve the goals"
+    gold_labels: [Directing, Reflective]
+    austin_class: Exercitive
+    is_artifact_seed: true
+    expected_artifact: "knowledge-note: value-proposition + theory explainer"
+
+  - n: 11
+    text: "Great, think deeply how would you design evaluation process and format convenient to you and humans evaluator to run my initial implementation as black      box and dogfeed with this session to test it in real capabilites."
+    gold_labels: [Directing, Reflective]
+    austin_class: Exercitive
+    is_artifact_seed: true
+    expected_artifact: "knowledge-note: evaluation protocol design"
+    note: "The meta-prompt — this evaluation request itself"
