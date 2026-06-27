@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS turns (
     role            TEXT NOT NULL CHECK (role IN ('user','assistant')),
     content         TEXT NOT NULL,
     token_estimate  INTEGER NOT NULL DEFAULT 0,
-``    parent_id       TEXT,
+    parent_id       TEXT,
     UNIQUE (chat_id, idx)
 );
 

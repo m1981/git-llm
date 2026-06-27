@@ -236,24 +236,7 @@ def convert(
     console.print(f"[green]✓[/] Wrote {n} turns to {out}")
 
 
-@app.command(name="export-pi")
-def export_pi(
-    src: Path = typer.Argument(..., exists=True, readable=True, help="pi.dev session JSONL file."),
-    out: Path = typer.Argument(..., help="Destination .json file (canonical envelope)."),
-) -> None:
-    """Export a pi.dev session to canonical ChatExport JSON."""
-    from git_llm.export import write_json
-    from git_llm.pi_import import parse_pi_file
-
-    export = parse_pi_file(src)
-    result = write_json(export, out)
-    console.print(
-        f"[green]✓[/] Exported {len(export.messages)} turns from "
-        f"'{export.title}' to {result}"
-    )
-
-
-``@app.command()
+@app.command()
 def export(
     chat_id: int = typer.Argument(...),
     out: Path = typer.Argument(..., help="Destination .jsonl file."),
