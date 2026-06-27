@@ -206,12 +206,17 @@ def ingest_file(
     )
     chat_id = int(cur.lastrowid)
 
-    rows = [
-        (chat_id, idx, role.value, content, _estimate_tokens(content))
-        for idx, (role, content) in enumerate(turns_raw)
-    ]
+    # Build turn rows; persist parent_id when the export carries it (pi sessions).
+    def _turn_row(idx: int, role: Role, content: str) -> tuple[int, int, str, str, int, str | None]:
+        pid: str | None = None
+        if export and idx < len(export.messages) and export.messages[idx].parent_id:
+            pid = export.messages[idx].parent_id
+        return (chat_id, idx, role.value, content, _estimate_tokens(content), pid)
+
+    rows = [_turn_row(idx, role, content) for idx, (role, content) in enumerate(turns_raw)]
     conn.executemany(
-        "INSERT INTO turns (chat_id, idx, role, content, token_estimate) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO turns (chat_id, idx, role, content, token_estimate, parent_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         rows,
     )
     conn.commit()
@@ -224,11 +229,25 @@ def _estimate_tokens(text: str) -> int:
 
 def fetch_turns(conn: sqlite3.Connection, chat_id: int) -> list[Turn]:
     rows = conn.execute(
-        "SELECT id, chat_id, idx, role, content, token_estimate "
+        "SELECT id, chat_id, idx, role, content, token_estimate, parent_id "
         "FROM turns WHERE chat_id = ? ORDER BY idx",
         (chat_id,),
     ).fetchall()
     return [Turn(**dict(r)) for r in rows]
+
+
+def fetch_turns_with_meta(
+    conn: sqlite3.Connection, chat_id: int
+) -> tuple[Chat, list[Turn]]:
+    """Return the Chat record alongside its turns — used by the export command."""
+    chat_row = conn.execute(
+        "SELECT id, title, source, created_at, raw_path, session_id "
+        "FROM chats WHERE id = ?", (chat_id,)
+    ).fetchone()
+    if not chat_row:
+        raise ValueError(f"chat_id={chat_id} not found")
+    turns = fetch_turns(conn, chat_id)
+    return Chat(**dict(chat_row)), turns
 
 
 # ---------------------------------------------------------------------------

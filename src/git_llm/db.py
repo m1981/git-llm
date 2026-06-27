@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS turns (
     role            TEXT NOT NULL CHECK (role IN ('user','assistant')),
     content         TEXT NOT NULL,
     token_estimate  INTEGER NOT NULL DEFAULT 0,
+``    parent_id       TEXT,
     UNIQUE (chat_id, idx)
 );
 
@@ -115,6 +116,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(chats)").fetchall()}
     if "session_id" not in cols:
         conn.execute("ALTER TABLE chats ADD COLUMN session_id TEXT")
+    # turns.parent_id — DAG support for regeneration branches (pi sessions)
+    has_turns = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='turns'"
+    ).fetchone()
+    if has_turns:
+        turn_cols = {r["name"] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
+        if "parent_id" not in turn_cols:
+            conn.execute("ALTER TABLE turns ADD COLUMN parent_id TEXT")
 
 
 def init_schema(conn: sqlite3.Connection) -> None:

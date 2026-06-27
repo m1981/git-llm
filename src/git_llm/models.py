@@ -18,6 +18,7 @@ class Turn(BaseModel):
     role: Role
     content: str
     token_estimate: int = 0
+    parent_id: str | None = None  # DAG edge (pi sessions) or None (linear chats)
     id: int | None = None
 
 

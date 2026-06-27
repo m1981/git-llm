@@ -253,6 +253,33 @@ def export_pi(
     )
 
 
+``@app.command()
+def export(
+    chat_id: int = typer.Argument(...),
+    out: Path = typer.Argument(..., help="Destination .jsonl file."),
+    db: Path = typer.Option(None, "--db"),
+) -> None:
+    """Export a stored chat as canonical JSONL (the round-tripable exchange format)."""
+    with db_mod.session(db) as conn:
+        chat, turns = ingest_mod.fetch_turns_with_meta(conn, chat_id)
+    if not turns:
+        console.print("[yellow]Chat has no turns.[/]")
+        return
+    from git_llm.schema import TurnExport
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    for t in turns:
+        te = TurnExport(
+            role=t.role.value,
+            content=t.content,
+            parent_id=t.parent_id,
+        )
+        lines.append(te.model_dump_json(exclude_none=True))
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    console.print(f"[green]✓[/] Exported chat {chat_id} ({len(turns)} turns) → {out}")
+
+
 @app.command()
 def chats(db: Path = typer.Option(None, "--db")) -> None:
     """List ingested chats."""
