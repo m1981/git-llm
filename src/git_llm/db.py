@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS chats (
     title       TEXT NOT NULL,
     source      TEXT NOT NULL DEFAULT 'manual',
     created_at  TEXT NOT NULL,
-    raw_path    TEXT
+    raw_path    TEXT,
+    session_id  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -48,7 +49,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     zk_id       TEXT NOT NULL UNIQUE,
     turn_start  INTEGER NOT NULL,
     turn_end    INTEGER NOT NULL,
-    labels      TEXT NOT NULL DEFAULT '',  -- comma-separated for quick filter
+    labels      TEXT NOT NULL DEFAULT '',
     file_path   TEXT,
     created_at  TEXT NOT NULL
 );
@@ -59,7 +60,6 @@ CREATE TABLE IF NOT EXISTS artifact_links (
     PRIMARY KEY (artifact_id, linked_zk_id)
 );
 
--- FTS5 mirror over turn content (cross-chat recall).
 CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
     content,
     content='turns',
@@ -67,7 +67,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
     tokenize='porter unicode61'
 );
 
--- Keep FTS in sync via triggers.
 CREATE TRIGGER IF NOT EXISTS turns_fts_ai AFTER INSERT ON turns BEGIN
     INSERT INTO turns_fts(rowid, content) VALUES (new.id, new.content);
 END;
@@ -82,6 +81,11 @@ END;
 CREATE INDEX IF NOT EXISTS idx_turns_chat ON turns(chat_id, idx);
 CREATE INDEX IF NOT EXISTS idx_labels_name ON labels(name);
 CREATE INDEX IF NOT EXISTS idx_labels_turn ON labels(turn_id);
+
+-- Partial unique index: many NULL session_ids allowed, but real values are unique.
+-- This is the dedup key for `gitllm import-pi --all`.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_session_id
+    ON chats(session_id) WHERE session_id IS NOT NULL;
 """
 
 
@@ -95,8 +99,27 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """
+    Bring older databases up to the current schema additively.
+
+    Must run BEFORE `executescript(SCHEMA)` so the schema's partial unique
+    index on `chats(session_id)` references a column that already exists.
+    No-op on fresh DBs (where `chats` does not exist yet).
+    """
+    has_chats = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chats'"
+    ).fetchone()
+    if not has_chats:
+        return  # fresh DB; SCHEMA will create everything correctly.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(chats)").fetchall()}
+    if "session_id" not in cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN session_id TEXT")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
+    _migrate(conn)            # upgrade legacy tables first
+    conn.executescript(SCHEMA)  # create anything missing (idempotent)
     conn.commit()
 
 

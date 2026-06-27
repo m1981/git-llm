@@ -106,10 +106,19 @@ and translated losslessly to our canonical schema:
   message as `metadata.control_events`
 
 ```bash
+# Single file (path auto-detects pi format)
 gitllm import-pi ~/.pi/agent/sessions/--Users-you-repo--/2026-06-27*.jsonl
-# or just:
-gitllm ingest ~/.pi/agent/sessions/--Users-you-repo--/2026-06-27*.jsonl
+
+# Bulk import every session ever — idempotent on session_id, safe to re-run.
+gitllm import-pi --all
+
+# Scoped bulk import with filters:
+gitllm import-pi --all --repo "git-llm,kuchnie" --since 2026-06-01
+gitllm import-pi --all --until 2026-06-30 --dry-run    # preview
 ```
+
+Re-running `--all` is a no-op for already-imported sessions (dedup key:
+the pi `session_id`). Output reports `discovered / imported / skipped / failed`.
 
 The `TurnExport` schema mirrors the OpenAI/Anthropic `messages` shape, so
 an API log ingests with zero translation:

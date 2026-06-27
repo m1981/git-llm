@@ -26,6 +26,7 @@ class Chat(BaseModel):
     source: str = "manual"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     raw_path: str | None = None
+    session_id: str | None = None  # pi.dev session UUID; dedup key for bulk import
     id: int | None = None
 
 

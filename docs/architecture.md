@@ -50,6 +50,34 @@ extract) is the bulk of the work and was missing.
   labels in the DB. LLM-based distillation can be added later as a separate
   `distill` command without touching extraction.
 
+### ADR-008: Bulk pi-session import is idempotent on `session_id`
+- **Status:** Accepted
+- **Context:** Users accumulate hundreds of pi sessions across many repos.
+  `gitllm import-pi --all` must be safe to run repeatedly (e.g. nightly) without
+  creating duplicate chats or re-doing labeling/extraction work.
+- **Decision:**
+  - Add a nullable `chats.session_id` column with a **partial unique index**
+    (`WHERE session_id IS NOT NULL`). This preserves many-NULLs for chats
+    with no upstream session id (markdown, OpenAI logs) while making real
+    session ids unique.
+  - `ingest_file(..., skip_if_exists=True)` short-circuits to the existing
+    chat_id when a session id collides. Without the flag, a collision
+    raises so accidental re-imports are loud.
+  - `bulk_import` does a cheap `peek_session_header` first (reads only line 1)
+    to apply repo/date filters before opening the full file.
+  - Existing DBs are migrated additively at `init_schema()` time:
+    `ALTER TABLE chats ADD COLUMN session_id TEXT` + the partial index.
+    No DROP, no data migration, safe to re-run.
+- **Repo filter semantics:** matched against three candidates
+  (`Path(cwd).name`, `repo_dir` directory name, full `cwd`) using both
+  substring and `fnmatch` glob. Avoids the lossy `--Users-x-y--` decoder.
+- **Date filter:** filename-prefix based (cheap, no file open) for the fast
+  pre-filter, then header timestamp is also stored on the `SessionRef` for
+  later sorting/reporting.
+- **Consequences:** `gitllm import-pi --all --since 2026-06-01` can be a
+  cron job. Discovery is O(files), import is O(new files). The DB never
+  contains a duplicate session.
+
 ### ADR-007: Adopt pi-session lessons via additive schema, not full mirror
 - **Status:** Accepted
 - **Context:** The `pi-session-export` skill stores agent sessions as JSONL
@@ -145,6 +173,16 @@ cli ──▶ ingest, label, search, phases, extract
   manual smoke tests only.
 
 ## 6. Roadmap
+
+### v0.2 — Cost-per-artifact reporting
+With `usage.cost_usd` per turn (ADR-007) and artifact-to-turn ranges
+(`artifacts.turn_start..end`), compute `$/ADR` and `$/knowledge-note`
+per chat and per repo. CLI: `gitllm cost --by repo --since 2026-06-01`.
+
+### v0.2 — DAG-aware phase compression
+Use `turns.parent_id` (TODO: persist on import) to detect regeneration
+branches and compress only the chosen branch into phases, marking
+abandoned branches as Infelicities automatically.
 
 ### v0.2 — Provider-specific importers
 Native readers for ChatGPT and Claude export zips, which encode

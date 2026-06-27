@@ -160,20 +160,49 @@ def parse_file(path: Path) -> tuple[ChatExport | None, list[tuple[Role, str]]]:
 # DB writes
 # ---------------------------------------------------------------------------
 
-def ingest_file(conn: sqlite3.Connection, path: Path, title: str | None = None) -> int:
+def ingest_file(
+    conn: sqlite3.Connection,
+    path: Path,
+    title: str | None = None,
+    *,
+    skip_if_exists: bool = False,
+) -> int:
+    """
+    Insert chat + turns. Returns the new (or existing) chat_id.
+
+    When the export carries a `session_id` in its metadata (pi.dev sessions do),
+    that value is the dedup key. With `skip_if_exists=True` a duplicate session
+    is a no-op that returns the existing chat_id. With `skip_if_exists=False`
+    a duplicate raises ValueError so users notice accidental re-imports.
+    """
     export, turns_raw = parse_file(path)
     if not turns_raw:
         raise ValueError(f"No turns parsed from {path}")
+
+    session_id = export.metadata.get("session_id") if export else None
+    if session_id:
+        row = conn.execute(
+            "SELECT id FROM chats WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if row:
+            if skip_if_exists:
+                return int(row["id"])
+            raise ValueError(
+                f"Session {session_id} already ingested as chat_id={row['id']}. "
+                f"Pass skip_if_exists=True to make this a no-op."
+            )
 
     chat = Chat(
         title=title or (export.title if export else None) or path.stem,
         source=path.suffix.lstrip(".") or "md",
         created_at=(export.created_at if export and export.created_at else datetime.utcnow()),
         raw_path=str(path.resolve()),
+        session_id=session_id,
     )
     cur = conn.execute(
-        "INSERT INTO chats (title, source, created_at, raw_path) VALUES (?, ?, ?, ?)",
-        (chat.title, chat.source, chat.created_at.isoformat(), chat.raw_path),
+        "INSERT INTO chats (title, source, created_at, raw_path, session_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (chat.title, chat.source, chat.created_at.isoformat(), chat.raw_path, chat.session_id),
     )
     chat_id = int(cur.lastrowid)
 

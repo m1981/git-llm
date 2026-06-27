@@ -149,17 +149,76 @@ def extract(
 
 @app.command(name="import-pi")
 def import_pi(
-    path: Path = typer.Argument(..., exists=True, readable=True, help="pi.dev session JSONL file."),
-    title: str = typer.Option(None, "--title"),
+    path: Path = typer.Argument(
+        None, help="Single pi session JSONL file. Omit when using --all."
+    ),
+    bulk: bool = typer.Option(
+        False, "--all", help="Bulk-import every session under --sessions-dir."
+    ),
+    sessions_dir: Path = typer.Option(
+        None,
+        "--sessions-dir",
+        help="Pi sessions root (default: ~/.pi/agent/sessions).",
+    ),
+    repo: str = typer.Option(
+        None,
+        "--repo",
+        help="Comma-separated repo name patterns (substring or glob). Bulk only.",
+    ),
+    since: str = typer.Option(None, "--since", help="YYYY-MM-DD (inclusive). Bulk only."),
+    until: str = typer.Option(None, "--until", help="YYYY-MM-DD (inclusive). Bulk only."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Discover and report; do not write to DB."
+    ),
+    title: str = typer.Option(None, "--title", help="Single-file only."),
     db: Path = typer.Option(None, "--db"),
 ) -> None:
-    """Import a pi.dev agent session (auto-detected; this command is explicit/sugar)."""
+    """Import pi.dev agent session(s). Use a path for one, --all for bulk."""
+    if bulk and path is not None:
+        raise typer.BadParameter("Provide either <path> OR --all, not both.")
+    if not bulk and path is None:
+        raise typer.BadParameter("Provide a <path> or use --all.")
+
+    if path is not None:
+        if not path.exists():
+            raise typer.BadParameter(f"File not found: {path}")
+        with db_mod.session(db) as conn:
+            chat_id = ingest_mod.ingest_file(conn, path, title=title)
+            n = conn.execute(
+                "SELECT COUNT(*) AS n FROM turns WHERE chat_id = ?", (chat_id,)
+            ).fetchone()["n"]
+        console.print(f"[green]✓[/] Imported pi session chat_id={chat_id} ({n} turns)")
+        return
+
+    # --- bulk path -----------------------------------------------------------
+    from git_llm import pi_bulk
+
+    sessions_root = sessions_dir or pi_bulk.DEFAULT_SESSIONS_DIR
+    patterns = [p for p in (repo or "").split(",") if p.strip()] or None
+
     with db_mod.session(db) as conn:
-        chat_id = ingest_mod.ingest_file(conn, path, title=title)
-        n = conn.execute(
-            "SELECT COUNT(*) AS n FROM turns WHERE chat_id = ?", (chat_id,)
-        ).fetchone()["n"]
-    console.print(f"[green]✓[/] Imported pi session chat_id={chat_id} ({n} turns)")
+        result = pi_bulk.bulk_import(
+            conn,
+            sessions_root,
+            repo_patterns=patterns,
+            since=since,
+            until=until,
+            dry_run=dry_run,
+        )
+
+    table = Table(title=f"pi bulk import — {sessions_root}", header_style="bold")
+    table.add_column("metric")
+    table.add_column("count", justify="right", style="cyan")
+    table.add_row("discovered", str(result.discovered))
+    table.add_row("imported", str(result.imported))
+    table.add_row("skipped (dedup)", str(result.skipped_dedup))
+    table.add_row("failed", str(result.failed))
+    console.print(table)
+    if result.failures:
+        for p, err in result.failures[:10]:
+            console.print(f"  [red]✗[/] {p}: {err}")
+    if dry_run:
+        console.print("[yellow]dry-run: nothing was written.[/]")
 
 
 @app.command()
@@ -175,6 +234,23 @@ def convert(
     out.write_text(md_to_jsonl(md), encoding="utf-8")
     n = sum(1 for _ in out.read_text().splitlines() if _.strip())
     console.print(f"[green]✓[/] Wrote {n} turns to {out}")
+
+
+@app.command(name="export-pi")
+def export_pi(
+    src: Path = typer.Argument(..., exists=True, readable=True, help="pi.dev session JSONL file."),
+    out: Path = typer.Argument(..., help="Destination .json file (canonical envelope)."),
+) -> None:
+    """Export a pi.dev session to canonical ChatExport JSON."""
+    from git_llm.export import write_json
+    from git_llm.pi_import import parse_pi_file
+
+    export = parse_pi_file(src)
+    result = write_json(export, out)
+    console.print(
+        f"[green]✓[/] Exported {len(export.messages)} turns from "
+        f"'{export.title}' to {result}"
+    )
 
 
 @app.command()

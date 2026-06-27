@@ -42,6 +42,14 @@ class UsageInfo(BaseModel):
 
     model_config = {"extra": "ignore"}
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize using Pydantic field names for lossless roundtrip.
+
+        Keys match ``UsageInfo`` field names (``input_tokens``, ``cost_usd``)
+        so that ``UsageInfo.model_validate(usage.to_dict())`` is identity.
+        """
+        return self.model_dump(exclude_none=True)
+
 
 class ContentBlock(BaseModel):
     """OpenAI / Anthropic-style content block, extended with `thinking`."""
@@ -52,6 +60,17 @@ class ContentBlock(BaseModel):
     name: str | None = None      # for tool_use
     # any other fields are tolerated but ignored
     model_config = {"extra": "allow"}
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to pi-compatible content block shape."""
+        d: dict[str, Any] = {"type": self.type}
+        if self.text is not None:
+            d["text"] = self.text
+        if self.thinking is not None:
+            d["thinking"] = self.thinking
+        if self.name is not None:
+            d["name"] = self.name
+        return d
 
 
 class TurnExport(BaseModel):
@@ -94,6 +113,31 @@ class TurnExport(BaseModel):
                 parts.append(f"[{block.type}]")
         return "\n".join(parts).strip()
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to canonical JSONL-compatible dict."""
+        content: str | list[dict[str, Any]]
+        if isinstance(self.content, str):
+            content = self.content
+        else:
+            content = [block.to_dict() for block in self.content]
+
+        msg: dict[str, Any] = {"role": self.role, "content": content}
+
+        if self.timestamp is not None:
+            msg["timestamp"] = self.timestamp.isoformat()
+        if self.model is not None:
+            msg["model"] = self.model
+        if self.id is not None:
+            msg["id"] = self.id
+        if self.parent_id is not None:
+            msg["parent_id"] = self.parent_id
+        if self.usage is not None:
+            msg["usage"] = self.usage.to_dict()
+        if self.metadata:
+            msg["metadata"] = self.metadata
+
+        return msg
+
 
 class ChatExport(BaseModel):
     """Top-level envelope for a chat export."""
@@ -105,3 +149,22 @@ class ChatExport(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"extra": "ignore"}
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to canonical JSON envelope dict.
+
+        ``ChatExport.metadata`` keys are promoted to the top level of the
+        envelope (alongside ``title``, ``model``, etc.) so that roundtripping
+        through ``parse_json`` reproduces the original flat metadata dict.
+        """
+        envelope: dict[str, Any] = {"messages": [m.to_dict() for m in self.messages]}
+        if self.title is not None:
+            envelope["title"] = self.title
+        if self.model is not None:
+            envelope["model"] = self.model
+        if self.created_at is not None:
+            envelope["created_at"] = self.created_at.isoformat()
+        # Promote metadata keys to top-level so parse_json can recover them.
+        for k, v in self.metadata.items():
+            envelope[k] = v
+        return envelope
