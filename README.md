@@ -32,8 +32,16 @@ pip install -e ".[dev]"
 # 1. Initialize the database (default: ~/.git-llm/chatdb.sqlite)
 gitllm init
 
-# 2. Ingest a markdown chat export (# user / # AI headings between turns)
+# 2. Ingest a chat export. Three formats supported:
+#    - .jsonl  (canonical: one TurnExport per line)
+#    - .json   (OpenAI/Anthropic shape: bare array OR {"messages":[...]} envelope)
+#    - .md     (best-effort: # user / # AI headings, code-fence aware)
+gitllm ingest exports/my-chat.jsonl
+gitllm ingest exports/openai-log.json
 gitllm ingest docs/initial-conversation.md --title "Initial Conversation"
+
+# Migrate a fragile markdown dump to canonical JSONL once, then forget about it:
+gitllm convert docs/initial-conversation.md exports/initial.jsonl
 
 # 3. Label every turn (offline heuristic — no API key needed)
 gitllm label 1
@@ -77,14 +85,52 @@ gitllm extract 1 --out ./zettel
   - `[Educational]`, `[Reflective]`, `[Pragmatic+Warning]` → **knowledge note**
   - `[Pivoting/Challenging] → [Pragmatic/Analytical] → [Synthesizing/Structuring]` → **ADR**
 
+## Source formats
+
+| Format | Use when | Robust? |
+|---|---|---|
+| **`.jsonl`** (canonical) | You control the export pipeline | ✅ |
+| **`.jsonl`** (pi.dev session) | Importing `~/.pi/agent/sessions/.../*.jsonl` | ✅ auto-detected |
+| **`.json`** | Raw OpenAI / Anthropic API log or ChatGPT export | ✅ |
+| **`.md`**   | One-off copy-paste from a web UI | ⚠️ best-effort |
+
+### Pi.dev session import
+
+Pi agent sessions are auto-detected (header line is `{"type":"session",...}`)
+and translated losslessly to our canonical schema:
+- `parentId` → `parent_id` (DAG / branch tracking)
+- `thinking` content blocks → first-class, FTS-indexed, surfaced as
+  `[thinking]\n...` so the labeler can tag reasoning traces
+- `usage` + `cost` → `UsageInfo` (input/output/cache tokens + USD cost)
+- `model_change` / `thinking_level_change` lines → attached to the next
+  message as `metadata.control_events`
+
+```bash
+gitllm import-pi ~/.pi/agent/sessions/--Users-you-repo--/2026-06-27*.jsonl
+# or just:
+gitllm ingest ~/.pi/agent/sessions/--Users-you-repo--/2026-06-27*.jsonl
+```
+
+The `TurnExport` schema mirrors the OpenAI/Anthropic `messages` shape, so
+an API log ingests with zero translation:
+
+```jsonl
+{"role":"user","content":"How do I split turns?"}
+{"role":"assistant","content":[{"type":"text","text":"Use JSONL."},{"type":"image"}]}
+```
+
+Non-text content blocks (`image`, `tool_use`, `tool_result`) are preserved
+as text markers, so turn count and ordering stay stable.
+
 ## Project layout
 
 ```
 src/git_llm/
   taxonomy.py    20 labels + Austin classes + MIDAS hints
-  models.py      Pydantic domain models
+  schema.py      TurnExport / ChatExport (canonical wire format)
+  models.py      Pydantic domain models (DB-facing)
   db.py          SQLite schema + FTS5
-  ingest.py      Markdown / JSON parsers
+  ingest.py      JSONL / JSON / Markdown parsers + `md_to_jsonl`
   label.py       StubLabeler + LLMLabeler (LiteLLM)
   phases.py      Adjacency-pair → macro-phase compression
   extract.py     Trigger rules → Zettelkasten markdown

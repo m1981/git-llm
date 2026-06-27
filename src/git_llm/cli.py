@@ -40,7 +40,7 @@ def ingest(
     title: str = typer.Option(None, "--title", help="Chat title (defaults to filename)."),
     db: Path = typer.Option(None, "--db"),
 ) -> None:
-    """Ingest a markdown or JSON chat export."""
+    """Ingest a chat export (.jsonl preferred, .json or .md also accepted)."""
     with db_mod.session(db) as conn:
         chat_id = ingest_mod.ingest_file(conn, path, title=title)
         n = conn.execute("SELECT COUNT(*) AS n FROM turns WHERE chat_id = ?", (chat_id,)).fetchone()["n"]
@@ -145,6 +145,36 @@ def extract(
     console.print(f"[green]✓[/] Wrote {len(arts)} artifacts to {out}")
     for art in arts:
         console.print(f"  [{art.kind}] {art.file_path}")
+
+
+@app.command(name="import-pi")
+def import_pi(
+    path: Path = typer.Argument(..., exists=True, readable=True, help="pi.dev session JSONL file."),
+    title: str = typer.Option(None, "--title"),
+    db: Path = typer.Option(None, "--db"),
+) -> None:
+    """Import a pi.dev agent session (auto-detected; this command is explicit/sugar)."""
+    with db_mod.session(db) as conn:
+        chat_id = ingest_mod.ingest_file(conn, path, title=title)
+        n = conn.execute(
+            "SELECT COUNT(*) AS n FROM turns WHERE chat_id = ?", (chat_id,)
+        ).fetchone()["n"]
+    console.print(f"[green]✓[/] Imported pi session chat_id={chat_id} ({n} turns)")
+
+
+@app.command()
+def convert(
+    src: Path = typer.Argument(..., exists=True, readable=True, help="Markdown chat dump."),
+    out: Path = typer.Argument(..., help="Destination .jsonl file."),
+) -> None:
+    """Convert a fragile markdown chat dump into canonical JSONL."""
+    from git_llm.ingest import md_to_jsonl
+
+    md = src.read_text(encoding="utf-8")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(md_to_jsonl(md), encoding="utf-8")
+    n = sum(1 for _ in out.read_text().splitlines() if _.strip())
+    console.print(f"[green]✓[/] Wrote {n} turns to {out}")
 
 
 @app.command()
