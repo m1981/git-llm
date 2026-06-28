@@ -97,11 +97,29 @@ def _real_content_length(text: str) -> int:
     return len(stripped.strip())
 
 
-def _is_knowledge_worthy(content: str) -> bool:
-    """Return True if this turn has enough real content to be a knowledge note."""
-    if _THINKING_RE.match(content.strip()):
-        return False  # pure thinking block
-    return _real_content_length(content) >= _MIN_CONTENT_LEN
+def _is_knowledge_worthy(content: str, labels: list[str] | None = None) -> bool:
+    """Return True if this turn has enough real content to be a knowledge note.
+
+    Thinking blocks are only promoted if they carry a strong knowledge trigger
+    (Educational, or Pragmatic+Warning).  Otherwise they are raw reasoning
+    traces that would dilute the zettel pool.
+    """
+    real_len = _real_content_length(content)
+    if real_len < _MIN_CONTENT_LEN:
+        return False
+    # Thinking blocks without a strong knowledge label are noise.
+    # Educational alone is too weak — the stub labeler assigns it to any
+    # thinking block containing words like "concept" or "principle".
+    # Only Pragmatic+Warning (trade-off reasoning) and Reflective (retrospection)
+    # are strong enough signals that a thinking block contains durable knowledge.
+    if _THINKING_RE.match(content.strip()) and labels:
+        has_strong_trigger = (
+            ("Pragmatic" in labels and "Warning" in labels)
+            or "Reflective" in labels
+        )
+        if not has_strong_trigger:
+            return False
+    return True
 
 
 def extract_knowledge(
@@ -117,8 +135,8 @@ def extract_knowledge(
         if not any(_matches_trigger(labels, trig) for trig in KNOWLEDGE_TRIGGERS):
             continue
         content = _turn_content(conn, chat_id, idx)
-        if not _is_knowledge_worthy(content):
-            continue  # skip thinking blocks and short tool-only turns
+        if not _is_knowledge_worthy(content, labels):
+            continue  # skip thinking blocks without strong triggers and short turns
         title = _derive_title(content, f"Knowledge from turn {idx}")
         zk_id = _zk_id(title, datetime.utcnow())
         # disambiguate within same second

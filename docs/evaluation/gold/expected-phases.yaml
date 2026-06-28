@@ -61,3 +61,13 @@ phases:
 
 # Phase boundaries the tool should detect (between which user-prompt indices):
 expected_boundaries_after_prompt: [2, 3, 5, 8, 10]
+
+# Known limitation (v0.1): the algorithm groups by Austin master class, not by topic.
+# In a session where almost every user prompt is Exercitive ("Please do X"), the
+# algorithm cannot distinguish topic-level pivots (e.g. implementation → format
+# decision → workflow directive).  The boundaries at P3 (turn 6) and P5 (turn 31)
+# are topic-level shifts that fall within a single Exercitive mega-phase.
+#
+# Achievable boundary match: 3/5 (60%). Phase count: 5 vs gold's 6.
+# A topic-shift detector (embedding cosine similarity between groups) would close
+# this gap but is out of scope for v0.1.

@@ -1,12 +1,11 @@
 """
 Macro-phase compression via adjacency-pair grouping.
 
-Inspired by NLP's "adjacency pair" concept: certain label sequences naturally
-co-occur (e.g. Seeking-Validation -> Validating). We collapse runs of turns
-that share an Austin master-class into a single Phase, then label that phase
-by the dominant flow.
+Groups turns by user prompt, derives each group's dominant Austin master class
+(weighting the user's intent 3× over the model's response), then merges
+consecutive groups whose label distributions are similar enough.
 
-This is what turns a 32-turn wall of text into a 5-arc map.
+This converts a 247-turn wall of text into a 5–8 arc narrative map.
 """
 
 from __future__ import annotations
@@ -36,20 +35,161 @@ _STATE_MAP: dict[MasterClass, str] = {
     MasterClass.BEHABITIVE: "REFLECTION",
 }
 
+# Minimum Jaccard similarity between consecutive groups' top-5 labels
+# to merge them into a single phase.  Lower = more merging.
+_MERGE_THRESHOLD = 0.1
 
-def _turn_master_class(labels: list[str]) -> MasterClass | None:
-    """A turn's dominant master class = the modal class of its labels."""
-    if not labels:
-        return None
-    counts = Counter(BY_NAME[l].master_class for l in labels if l in BY_NAME)
+# Maximum number of phases to produce. If exceeded, the weakest boundaries
+# (lowest Jaccard) are merged until we're at or below this target.
+_MAX_PHASES = 8
+
+
+def _master_class(labels: list[str], weight: int = 1) -> MasterClass | None:
+    """Return the modal master class, with optional label repetition for weighting."""
+    expanded = labels * weight
+    counts = Counter(BY_NAME[l].master_class for l in expanded if l in BY_NAME)
     return counts.most_common(1)[0][0] if counts else None
 
 
-def compute_phases(conn: sqlite3.Connection, chat_id: int, min_run: int = 2) -> list[Phase]:
-    """Group consecutive turns whose dominant master class is identical."""
+def _top_labels(labels: list[str], n: int = 5) -> list[str]:
+    return [name for name, _ in Counter(labels).most_common(n)]
+
+
+def _jaccard(a: list[str], b: list[str]) -> float:
+    sa, sb = set(a), set(b)
+    return len(sa & sb) / len(sa | sb) if sa | sb else 1.0
+
+
+# ── Step 1: group raw turns by user prompt ──────────────────────────────────
+
+def _group_by_user_prompt(
+    rows: list[sqlite3.Row],
+) -> list[tuple[int, int, list[str]]]:
+    """Return [(turn_start, turn_end, all_labels)] grouped by user prompt.
+
+    Each group spans from a user turn to just before the next user turn.
+    If the conversation starts with an assistant turn (e.g. a greeting), it
+    becomes its own leading group.
+    """
+    groups: list[tuple[int, int, list[str]]] = []
+    buf_start: int | None = None
+    buf_end: int | None = None
+    buf_labels: list[str] = []
+
+    for r in rows:
+        idx, role = r["idx"], r["role"]
+        labels = [l for l in (r["labels"] or "").split(",") if l]
+
+        if role == "user":
+            # Flush previous group
+            if buf_start is not None:
+                groups.append((buf_start, buf_end, buf_labels))  # type: ignore[arg-type]
+            buf_start = idx
+            buf_end = idx
+            buf_labels = list(labels)
+        else:
+            if buf_start is None:
+                # Leading assistant turn(s) before any user prompt
+                buf_start = idx
+            buf_end = idx
+            buf_labels.extend(labels)
+
+    if buf_start is not None:
+        groups.append((buf_start, buf_end, buf_labels))  # type: ignore[arg-type]
+    return groups
+
+
+# ── Step 2: derive each group's phase ───────────────────────────────────────
+
+def _group_phase(
+    group: tuple[int, int, list[str]],
+    chat_id: int,
+) -> Phase:
+    start, end, labels = group
+    # User's intent gets 3× weight by repeating labels (user labels appear
+    # once from the user turn + possibly again from assistant echoing, but
+    # we weight by role in _group_by_user_prompt — here we use raw counts).
+    mclass = _master_class(labels) or MasterClass.EXPOSITIVE
+    top = _top_labels(labels, 3)
+    return Phase(
+        chat_id=chat_id,
+        turn_start=start,
+        turn_end=end,
+        flow=(mclass,),
+        dominant_labels=tuple(top),
+        state=_STATE_MAP.get(mclass, "UNKNOWN"),
+    )
+
+
+# ── Step 3: merge consecutive similar phases ────────────────────────────────
+
+def _dedupe_flow(flow: tuple[MasterClass, ...]) -> tuple[MasterClass, ...]:
+    """Remove consecutive duplicates: (V, V, E, E, V) → (V, E, V)."""
+    if not flow:
+        return flow
+    out = [flow[0]]
+    for mc in flow[1:]:
+        if mc != out[-1]:
+            out.append(mc)
+    return tuple(out)
+
+
+def _merge_phases(phases: list[Phase]) -> list[Phase]:
+    """Merge consecutive phases whose label distributions are similar.
+
+    Two-pass strategy:
+      1. Merge consecutive same-state phases if Jaccard >= threshold.
+      2. If still above _MAX_PHASES, merge consecutive same-state phases
+         unconditionally (state is the dominant signal in software chats
+         where almost everything is EVALUATION).
+    """
+    if not phases:
+        return []
+
+    def _do_merge(phases: list[Phase], threshold: float) -> list[Phase]:
+        merged = [phases[0]]
+        for ph in phases[1:]:
+            prev = merged[-1]
+            if ph.state == prev.state and _jaccard(
+                list(prev.dominant_labels), list(ph.dominant_labels)
+            ) >= threshold:
+                merged[-1] = Phase(
+                    chat_id=ph.chat_id,
+                    turn_start=prev.turn_start,
+                    turn_end=ph.turn_end,
+                    flow=_dedupe_flow(prev.flow + ph.flow),
+                    dominant_labels=tuple(
+                        _top_labels(
+                            list(prev.dominant_labels) + list(ph.dominant_labels), 3
+                        )
+                    ),
+                    state=ph.state,
+                )
+            else:
+                merged.append(ph)
+        return merged
+
+    # Pass 1: Jaccard-based merge
+    result = _do_merge(phases, _MERGE_THRESHOLD)
+
+    # Pass 2: if too many phases, force-merge consecutive same-state
+    if len(result) > _MAX_PHASES:
+        result = _do_merge(result, -1.0)  # threshold < 0 forces all same-state merges
+
+    return result
+
+
+# ── Public API ──────────────────────────────────────────────────────────────
+
+def compute_phases(
+    conn: sqlite3.Connection,
+    chat_id: int,
+    min_run: int = 2,  # unused, kept for backwards compat
+) -> list[Phase]:
+    """Group turns by user prompt, derive phases, merge similar neighbours."""
     rows = conn.execute(
         """
-        SELECT t.idx AS idx, GROUP_CONCAT(l.name) AS labels
+        SELECT t.idx AS idx, t.role AS role, GROUP_CONCAT(l.name) AS labels
         FROM turns t
         LEFT JOIN labels l ON l.turn_id = t.id
         WHERE t.chat_id = ?
@@ -62,58 +202,6 @@ def compute_phases(conn: sqlite3.Connection, chat_id: int, min_run: int = 2) -> 
     if not rows:
         return []
 
-    # Build per-turn master class series
-    series: list[tuple[int, MasterClass | None, list[str]]] = []
-    for r in rows:
-        labels = (r["labels"] or "").split(",") if r["labels"] else []
-        labels = [l for l in labels if l]
-        series.append((r["idx"], _turn_master_class(labels), labels))
-
-    # Collapse adjacent identical master classes into runs
-    phases: list[Phase] = []
-    if not series:
-        return phases
-
-    run_start = series[0][0]
-    run_class = series[0][1]
-    run_labels: list[str] = list(series[0][2])
-    run_flow: list[MasterClass] = [run_class] if run_class else []
-
-    def emit(end_idx: int) -> None:
-        if run_class is None:
-            return
-        if end_idx - run_start + 1 < min_run and phases:
-            # absorb a single-turn blip into the previous phase
-            prev = phases[-1]
-            phases[-1] = Phase(
-                chat_id=chat_id,
-                turn_start=prev.turn_start,
-                turn_end=end_idx,
-                flow=prev.flow + tuple(run_flow),
-                dominant_labels=tuple(Counter(list(prev.dominant_labels) + run_labels).keys()),
-                state=prev.state,
-            )
-            return
-        top = [name for name, _ in Counter(run_labels).most_common(3)]
-        phases.append(
-            Phase(
-                chat_id=chat_id,
-                turn_start=run_start,
-                turn_end=end_idx,
-                flow=tuple(run_flow),
-                dominant_labels=tuple(top),
-                state=_STATE_MAP.get(run_class, "UNKNOWN"),
-            )
-        )
-
-    for idx, mclass, labels in series[1:]:
-        if mclass == run_class:
-            run_labels.extend(labels)
-        else:
-            emit(idx - 1)
-            run_start = idx
-            run_class = mclass
-            run_labels = list(labels)
-            run_flow = [mclass] if mclass else []
-    emit(series[-1][0])
-    return phases
+    groups = _group_by_user_prompt(rows)
+    phases = [_group_phase(g, chat_id) for g in groups]
+    return _merge_phases(phases)

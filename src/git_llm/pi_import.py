@@ -101,7 +101,7 @@ def parse_pi_session(text: str) -> ChatExport:
     pending_events: list[dict[str, Any]] = []
     turns: list[TurnExport] = []
 
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(text.split("\n"), start=1):
         line = raw.strip()
         if not line:
             continue

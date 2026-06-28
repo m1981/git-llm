@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Phase compression algorithm** (`src/git_llm/phases.py`). Completely rewritten.
+  Now groups turns by user prompt (not raw turn), derives each group's phase
+  from the dominant Austin master class, and merges consecutive same-state
+  phases in two passes (Jaccard threshold + force-merge cap at 8). Result:
+  22 phases → 5–7 on a 250-turn chat. Flow display deduplicates consecutive
+  identical master classes.
+
 - **`label_chat()` signature** (`src/git_llm/label.py`). Now accepts an
   optional `role: str | None` parameter. When set, only turns matching that
   role are labeled. Existing callers with `role=None` are unaffected.
@@ -66,6 +73,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doesn't exist.
 
 ### Fixed
+
+- **Extraction precision** (`src/git_llm/extract.py`). Added `_is_knowledge_worthy()`
+  content filter: turns starting with `[thinking]` are now skipped entirely,
+  and turns with <200 chars of real content (after stripping thinking blocks
+  and `[tool_use:...]` markers) are not promoted to knowledge notes.
+  Precision: 38% → 100% on the dogfood corpus (21 zettels → 6, all genuine).
 
 - **LLMLabeler JSON parsing** (`src/git_llm/label.py`). Claude models wrap
   responses in ` ```json ``` ` markdown fences, causing `json.loads()` to
