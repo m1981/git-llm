@@ -22,7 +22,14 @@ from pathlib import Path
 import yaml
 from slugify import slugify
 
+import re as _re
+
 from git_llm.taxonomy import ADR_TRIGGER_SEQUENCES, KNOWLEDGE_TRIGGERS
+
+# Patterns for content that should NOT be promoted to knowledge notes.
+_THINKING_RE = _re.compile(r"^\[thinking]\s*\n", _re.IGNORECASE)
+_TOOL_USE_RE = _re.compile(r"\[tool_use:\w+]")
+_MIN_CONTENT_LEN = 200  # chars of real content required after stripping
 
 
 @dataclass(slots=True)
@@ -79,6 +86,24 @@ def _derive_title(content: str, fallback: str) -> str:
     return fallback
 
 
+def _real_content_length(text: str) -> int:
+    """Return the length of 'real' content after stripping thinking blocks
+    and tool-use markers. Used to decide whether a turn is worth extracting."""
+    stripped = text.strip()
+    # Strip leading [thinking] block (may span multiple lines)
+    stripped = _THINKING_RE.sub("", stripped)
+    # Remove [tool_use:...] inline markers
+    stripped = _TOOL_USE_RE.sub("", stripped)
+    return len(stripped.strip())
+
+
+def _is_knowledge_worthy(content: str) -> bool:
+    """Return True if this turn has enough real content to be a knowledge note."""
+    if _THINKING_RE.match(content.strip()):
+        return False  # pure thinking block
+    return _real_content_length(content) >= _MIN_CONTENT_LEN
+
+
 def extract_knowledge(
     conn: sqlite3.Connection, chat_id: int
 ) -> list[ExtractedArtifact]:
@@ -92,6 +117,8 @@ def extract_knowledge(
         if not any(_matches_trigger(labels, trig) for trig in KNOWLEDGE_TRIGGERS):
             continue
         content = _turn_content(conn, chat_id, idx)
+        if not _is_knowledge_worthy(content):
+            continue  # skip thinking blocks and short tool-only turns
         title = _derive_title(content, f"Knowledge from turn {idx}")
         zk_id = _zk_id(title, datetime.utcnow())
         # disambiguate within same second
