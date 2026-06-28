@@ -17,3 +17,4 @@ scripts/.env
 .DS_Store
 zettel/
 .idea
+eval-run/
