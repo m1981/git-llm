@@ -154,6 +154,14 @@ class LLMLabeler:
             ],
         )
         raw = resp["choices"][0]["message"]["content"]
+
+        # Strip markdown code fences that Claude and some models wrap JSON in
+        raw = raw.strip()
+        if raw.startswith("```"):
+            # Remove opening fence (with optional language tag) and closing fence
+            raw = re.sub(r"^```(?:json)?\s*\n?", "", raw)
+            raw = re.sub(r"\n?```\s*$", "", raw)
+
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
@@ -172,13 +180,28 @@ class LLMLabeler:
 # Persistence
 # ---------------------------------------------------------------------------
 
-def label_chat(conn: sqlite3.Connection, chat_id: int, labeler: Labeler) -> int:
-    """Label every turn in a chat; replace any prior labels from this labeler."""
-    rows = conn.execute(
+def label_chat(
+    conn: sqlite3.Connection,
+    chat_id: int,
+    labeler: Labeler,
+    role: str | None = None,
+) -> int:
+    """Label turns in a chat; replace any prior labels from this labeler.
+
+    Args:
+        role: If set (e.g. 'user' or 'assistant'), only label turns with this role.
+              If None, label every turn.
+    """
+    sql = (
         "SELECT id, chat_id, idx, role, content, token_estimate "
-        "FROM turns WHERE chat_id = ? ORDER BY idx",
-        (chat_id,),
-    ).fetchall()
+        "FROM turns WHERE chat_id = ?"
+    )
+    params: list[object] = [chat_id]
+    if role is not None:
+        sql += " AND role = ?"
+        params.append(role)
+    sql += " ORDER BY idx"
+    rows = conn.execute(sql, params).fetchall()
 
     n_inserted = 0
     for row in rows:
