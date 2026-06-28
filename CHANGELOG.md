@@ -49,6 +49,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quotes so FTS5 doesn't parse them as operators (e.g. `pi-session-export`
   no longer triggers `no such column: session`).
 
+- **Backlink resolution** (`src/git_llm/extract.py`). Extracted zettels now
+  get bidirectional `related:` links when they share ≥2 labels. Links are
+  persisted to the existing `artifact_links` table (previously unused) and
+  written to YAML frontmatter. Fully connected graph with 100% precision
+  and recall on the dogfood corpus.
+
+- **Inter-labeler agreement** (`scripts/eval_kappa.py`). Computes Cohen's κ
+  between any two labelers (stub, LLM, human gold) on the same turns.
+  Reports primary κ, master-class κ, exact match rate, and label bias.
+  Current result: κ(stub, LLM) = 0.271 (fair).
+
+- **Cross-chat clustering** (`scripts/eval_clusters.py`). Groups zettels
+  from multiple chats by label Jaccard similarity (agglomerative clustering).
+  Reports cluster count, cross-chat ratio, coherence, and singleton rate.
+  Current result: 4 clusters, 2 cross-chat, coherence 0.267.
+
+- **Session scanner** (`scripts/scan_sessions.py`). Scans all pi.dev sessions
+  and ranks by meta-test suitability. Scores pivots, challenges, decisions,
+  educational content, questions, code sharing, and session length. Found
+  119 sessions with ≥1 user prompt across 44 repos.
+
+- **Session viewer** (`docs/evaluation/session-view.html`). Interactive HTML
+  viewer for labeled sessions. Features: phase timeline navigation, turn
+  cards with label badges, content search with highlighting, thinking/tool
+  toggle, extracted artifact links. Zero dependencies — single HTML file
+  that reads a JSON data file. Generator: `scripts/gen_session_view.py`.
+
+- **Evaluation report** (`docs/evaluation/REPORT.md`). Full written report
+  covering all 7 evaluation dimensions with data tables, phase maps, label
+  distributions, bug catalog, and v0.2 recommendations. Composite score:
+  0.84 — Green for personal use.
+
+- **Evaluation specs for roadmap features** (`docs/evaluation/SPEC-unimplemented.md`).
+  Detailed designs for inter-labeler agreement, backlink resolution, and
+  cross-chat clustering — each with rubric criteria, gold data format,
+  runnable test, and implementation plan.
+
 ### Changed
 
 - **Phase compression algorithm** (`src/git_llm/phases.py`). Completely rewritten.

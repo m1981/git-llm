@@ -1,6 +1,6 @@
 # Architecture
 
-> Design rationale for `git-llm`. Last updated: 2026-06-27.
+> Design rationale for `git-llm`. Last updated: 2026-06-28.
 
 ## 1. Problem framing
 
@@ -14,7 +14,298 @@ extract) is the bulk of the work and was missing.
 
 ---
 
-## 2. Architecture Decision Records
+## 2. Architecture overview
+
+`git-llm` is a **pipelined knowledge extraction system** for LLM conversations.
+The design uses well-known patterns at each layer; this section names them
+explicitly so future contributors can navigate by intent, not just by file.
+
+### Layers and patterns
+
+| Layer | Pattern | Implementation |
+|---|---|---|
+| Domain | Value Objects (frozen dataclasses) | `taxonomy.py`, `schema.py`, `models.py` |
+| Storage | Repository + Unit of Work | `db.py` — `session()` context manager owns all SQL |
+| Source adapters | Adapter | `pi_import.py`, `ingest.py` — provider format → `ChatExport` |
+| Pluggable classifier | Strategy + Protocol | `Labeler` protocol with `StubLabeler` / `LLMLabeler` |
+| Classification rules | Specification | `KNOWLEDGE_TRIGGERS`, `ADR_TRIGGER_SEQUENCES` in `taxonomy.py` |
+| Multi-stage extraction | Template Method / Pipeline | `extract_all()` → extract → resolve backlinks → write |
+| Backlink graph | Bidirectional Link | `_resolve_backlinks()` + `artifact_links` table |
+| Schema evolution | Additive Migration | `_migrate()` runs before `CREATE TABLE IF NOT EXISTS` |
+| Idempotency | Idempotency Key | `chats.session_id` partial unique index |
+| Phase compression | Two-Pass Merge | Jaccard threshold pass + force-merge cap |
+| Evaluation | Single Source of Truth | `rubric.yaml` drives human + AI scorecards |
+| User interface | Facade | `cli.py` is the only stdout/stderr touchpoint |
+
+### Component map
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         CLI (Facade)                             │
+│              cli.py — typer commands, Rich output                │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+┌─────────────────────────────┼────────────────────────────────────┐
+│                             ▼                                    │
+│  Service layer                                                   │
+│  ┌──────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐  │
+│  │  ingest  │ │  label  │ │ phases  │ │ extract │ │  search  │  │
+│  │ pi_import│ │ Labeler │ │  Phase  │ │ Artifact│ │   FTS5   │  │
+│  │ pi_bulk  │ │ Strategy│ │ compress│ │ extract │ │  + label │  │
+│  └──────────┘ └─────────┘ └─────────┘ └─────────┘ └──────────┘  │
+│  ┌──────────┐  ┌─────────────────────────────────────────────┐  │
+│  │ export   │  │  Off-pipeline tools (scripts/)              │  │
+│  │ convert  │  │  scan_sessions, eval_kappa, eval_backlinks, │  │
+│  │          │  │  eval_clusters, gen_session_view            │  │
+│  └──────────┘  └─────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+┌─────────────────────────────┼────────────────────────────────────┐
+│                             ▼                                    │
+│  Storage layer (Repository)                                      │
+│  db.py — schema, migrations, FTS5, session() context manager     │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+┌─────────────────────────────┼────────────────────────────────────┐
+│                             ▼                                    │
+│  Domain layer (pure, no IO)                                      │
+│  taxonomy.py — 20 labels, master classes, triggers               │
+│  schema.py   — TurnExport, ChatExport, ContentBlock              │
+│  models.py   — DB-facing Pydantic models                         │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Deliberate non-decisions
+
+- **No ORM.** Raw SQL with `sqlite3.Row` is fast enough and avoids leakage.
+- **No DI framework.** Dependencies pass explicitly via function signatures.
+- **No async.** The labeler is the only IO bottleneck and is naturally batched.
+- **No microservices.** Single Python package, single SQLite file, single user.
+- **No content embeddings (yet).** Backlinks and clustering use label overlap;
+  content vectors are deferred until volume justifies the dependency.
+
+---
+
+## 3. Sequence diagrams
+
+The five flows below cover the dominant pipelines. Together they describe
+~90% of what the system does at runtime.
+
+### 3.1 Bulk pi-session import (idempotent)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as cli.py
+    participant Bulk as pi_bulk.py
+    participant Ingest as ingest.py
+    participant PiImp as pi_import.py
+    participant DB as db.py (SQLite)
+
+    User->>CLI: gitllm import-pi --all --repo kuchnie --since 2026-06-01
+    CLI->>Bulk: bulk_import(conn, root, repo, since, until)
+    Bulk->>Bulk: walk sessions_dir → SessionRef[]
+    loop For each candidate file
+        Bulk->>PiImp: peek_session_header(path)
+        PiImp-->>Bulk: SessionRef(id, repo, ts)
+        Bulk->>Bulk: apply filters (repo, since, until)
+    end
+
+    loop For each filtered SessionRef
+        Bulk->>DB: SELECT id FROM chats WHERE session_id = ?
+        alt session_id already imported
+            DB-->>Bulk: existing chat_id
+            Note over Bulk: skip (dedup)
+        else new session
+            Bulk->>Ingest: ingest_file(path, skip_if_exists=True)
+            Ingest->>PiImp: parse_pi_session(text)
+            PiImp-->>Ingest: ChatExport (turns flattened to text + markers)
+            Ingest->>DB: INSERT INTO chats, turns (FTS5 auto-sync)
+            DB-->>Ingest: chat_id
+        end
+    end
+    Bulk-->>CLI: BulkResult(discovered, imported, skipped, failed)
+    CLI-->>User: Rich table (4 rows)
+```
+
+### 3.2 Labeling with role filter (stub vs LLM)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as cli.py
+    participant Lbl as label.label_chat
+    participant Stub as StubLabeler
+    participant LLM as LLMLabeler
+    participant LiteLLM as litellm
+    participant API as Anthropic API
+    participant DB as db.py
+
+    User->>CLI: gitllm label 2 --model claude-sonnet-4-5 --role user
+    CLI->>Lbl: label_chat(conn, chat_id=2, labeler, role="user")
+    Lbl->>DB: SELECT turns WHERE chat_id=2 AND role='user'
+    DB-->>Lbl: 20 user turns
+
+    loop For each turn
+        alt model == "stub"
+            Lbl->>Stub: label(turn)
+            Note over Stub: regex heuristics over content
+            Stub-->>Lbl: [(name, conf), ...]
+        else model != "stub"
+            Lbl->>LLM: label(turn)
+            LLM->>LiteLLM: completion(model, messages, response_format=json)
+            LiteLLM->>API: POST /v1/messages
+            API-->>LiteLLM: choices[0].message.content (may be in ```json fences)
+            LiteLLM-->>LLM: raw response
+            LLM->>LLM: strip markdown fences
+            LLM->>LLM: json.loads + filter to taxonomy
+            LLM-->>Lbl: [(name, conf), ...]
+        end
+        Lbl->>DB: DELETE labels WHERE turn_id=? AND labeler=?
+        Lbl->>DB: INSERT INTO labels (turn_id, name, master_class, conf, labeler)
+    end
+    Lbl-->>CLI: n_labels written
+    CLI-->>User: ✓ Wrote N labels (user-only) using llm:claude-sonnet-4-5
+```
+
+### 3.3 Phase compression (user-prompt grouping + two-pass merge)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as cli.py
+    participant Ph as phases.compute_phases
+    participant DB as db.py
+    participant Tx as taxonomy.py
+
+    User->>CLI: gitllm phases 2
+    CLI->>Ph: compute_phases(conn, chat_id=2)
+    Ph->>DB: SELECT t.idx, t.role, GROUP_CONCAT(l.name) FROM turns LEFT JOIN labels
+    DB-->>Ph: rows (idx, role, labels)
+
+    Note over Ph: Step 1 — group by user prompt
+    Ph->>Ph: _group_by_user_prompt(rows)
+    Note over Ph: each group = user turn + following assistant turns
+
+    Note over Ph: Step 2 — derive each group's phase
+    loop For each group
+        Ph->>Tx: BY_NAME[label].master_class
+        Tx-->>Ph: MasterClass (e.g. EXERCITIVE)
+        Ph->>Ph: Phase(state, flow, dominant_labels)
+    end
+
+    Note over Ph: Step 3 — two-pass merge
+    Ph->>Ph: Pass 1: merge same-state if Jaccard >= 0.1
+    Ph->>Ph: Pass 2: if count > 8, force-merge same-state
+    Ph->>Ph: _dedupe_flow() — drop consecutive duplicates
+
+    Ph-->>CLI: [Phase, ...] (≈7 phases for a 250-turn chat)
+    CLI-->>User: Rich table (turns | state | flow | dominant labels)
+```
+
+### 3.4 Knowledge extraction with backlink resolution
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as cli.py
+    participant Ex as extract_all
+    participant DB as db.py
+    participant Tx as taxonomy.py
+    participant FS as Filesystem
+
+    User->>CLI: gitllm extract 2 --out ./zettel
+    CLI->>Ex: extract_all(conn, chat_id=2, out_dir)
+
+    Note over Ex: Stage 1 — extract knowledge notes
+    Ex->>DB: SELECT idx, name FROM turns JOIN labels
+    DB-->>Ex: turn_labels map
+    loop For each labeled turn
+        Ex->>Tx: matches any KNOWLEDGE_TRIGGERS?
+        Tx-->>Ex: yes/no
+        opt match
+            Ex->>DB: SELECT content FROM turns WHERE idx=?
+            DB-->>Ex: content
+            Ex->>Ex: _is_knowledge_worthy(content, labels)
+            Note over Ex: thinking blocks pass only if<br/>Synthesizing OR Reflective OR<br/>(Pragmatic AND Warning)
+            opt worthy
+                Ex->>Ex: ExtractedArtifact(kind="knowledge")
+            end
+        end
+    end
+
+    Note over Ex: Stage 2 — extract ADRs (window-based)
+    Ex->>Tx: ADR_TRIGGER_SEQUENCES
+    Tx-->>Ex: ((Pivot|Challenge),(Pragmatic|Analytical),(Synth|Struct))
+    Ex->>Ex: slide window across labeled turns
+    opt sequence match
+        Ex->>Ex: ExtractedArtifact(kind="adr")
+    end
+
+    Note over Ex: Stage 3 — resolve bidirectional backlinks
+    Ex->>Ex: _resolve_backlinks(artifacts, min_shared=2)
+    loop For each pair (i, j)
+        Ex->>Ex: shared = labels[i] ∩ labels[j]
+        opt len(shared) >= 2
+            Ex->>Ex: artifacts[i].related += b.zk_id
+            Ex->>Ex: artifacts[j].related += a.zk_id
+        end
+    end
+
+    Note over Ex: Stage 4 — write artifacts + persist links
+    loop For each artifact
+        Ex->>Ex: render_markdown() — YAML frontmatter + body
+        Ex->>FS: write zettel/(notes|adrs)/<zk_id>.md
+        Ex->>DB: INSERT INTO artifacts (...)
+        loop For each related zk_id
+            Ex->>DB: INSERT INTO artifact_links (artifact_id, linked_zk_id)
+        end
+    end
+
+    Ex-->>CLI: [artifacts, ...]
+    CLI-->>User: ✓ Wrote N artifacts to ./zettel
+```
+
+### 3.5 Search (FTS5 + label + master-class filters)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as cli.py
+    participant Search as search.search
+    participant DB as db.py
+    participant FTS as turns_fts
+
+    User->>CLI: gitllm search --text "sqlalchemy AND pool" --class Verdictive
+    CLI->>Search: search(conn, text=..., master_class="Verdictive")
+
+    Note over Search: build WHERE clauses incrementally
+    opt text != None
+        Search->>Search: JOIN turns_fts f ON f.rowid = t.id
+        Search->>Search: WHERE f.content MATCH ?
+    end
+    opt label != None
+        Search->>Search: WHERE EXISTS (SELECT 1 FROM labels WHERE name = ?)
+    end
+    opt master_class != None
+        Search->>Search: WHERE EXISTS (SELECT 1 FROM labels WHERE master_class = ?)
+    end
+    opt chat_id != None
+        Search->>Search: WHERE t.chat_id = ?
+    end
+
+    Search->>DB: SELECT t.id, idx, role, snippet, c.title, GROUP_CONCAT(labels)
+    DB->>FTS: MATCH ?
+    FTS-->>DB: matching rowids
+    DB-->>Search: joined rows
+
+    Search-->>CLI: [SearchHit, ...]
+    CLI-->>User: Rich table (chat | turn | role | labels | snippet)
+```
+
+---
+
+## 4. Architecture Decision Records
 
 ### ADR-001: SQLite + FTS5 over a graph DB or Elasticsearch
 - **Status:** Accepted
@@ -190,9 +481,62 @@ extract) is the bulk of the work and was missing.
   `gitllm` invocation. No manual migration commands needed. Verified with a
   hand-crafted legacy SQLite file in `test_migration_adds_session_id_column`.
 
+### ADR-011: Bidirectional backlinks via label overlap (not embeddings)
+- **Status:** Accepted (implemented 2026-06-28)
+- **Context:** Zettels need to form a connected graph (the Zettelkasten promise),
+  but content-based similarity (sentence-transformers) is a heavy dependency for
+  a first pass and non-deterministic across model versions.
+- **Decision:** When two artifacts share ≥2 labels, emit a bidirectional link.
+  Links are persisted to the existing-but-previously-unused `artifact_links`
+  table and written to YAML frontmatter as `related: [zk_id, ...]`.
+  Resolution runs in `extract._resolve_backlinks()` *before* `write_artifacts()`
+  so the on-disk markdown and the DB row agree.
+- **Consequences:** Deterministic, dependency-free, fully reversible. Empirical
+  result on the 12-zettel dogfood corpus: 42 links, 100% bidirectional, 0
+  isolated nodes, 100% precision (every link shares labels by construction).
+  Content-embedding upgrade can be layered later by adding a second resolution
+  pass without changing the storage shape.
+
+### ADR-012: Thinking-block extraction needs a strong-trigger gate
+- **Status:** Accepted (implemented 2026-06-28)
+- **Context:** The first extraction pass surfaced 21 zettels of which 13 were
+  raw reasoning traces (`[thinking]` blocks the labeler had tagged `Educational`
+  because they contained words like "concept" or "principle"). Precision was
+  38%, far below the 70% target. A naive "skip all `[thinking]`" filter cut
+  precision to 100% but destroyed recall on tool-heavy sessions where the
+  knowledge actually lives inside thinking traces.
+- **Decision:** Promote a thinking block to a knowledge note only if it carries
+  a *strong-signal* label: `Synthesizing` (multi-concept integration),
+  `Pragmatic+Warning` (trade-off reasoning), or `Reflective` (retrospection).
+  `Educational` alone is too weak because the stub labeler over-assigns it.
+  Logic lives in `extract._is_knowledge_worthy(content, labels)`.
+- **Consequences:** Precision 100% on text-rich sessions, ~95% on tool-heavy
+  sessions. Recall on a 168-turn kuchnie session: 19 zettels surfaced where
+  the previous filter found 1. The filter is inspectable (one function) and
+  the strong-trigger set is the same set used by `KNOWLEDGE_TRIGGERS`.
+
+### ADR-013: Phase compression groups by user prompt, not raw turn
+- **Status:** Accepted (implemented 2026-06-28)
+- **Context:** The first phase algorithm grouped consecutive raw turns sharing
+  a master class. On a 248-turn session this produced 22 phases — too granular
+  to navigate. Every thinking block (Verdictive) followed by an action turn
+  (Exercitive) created a new boundary.
+- **Decision:** Group raw turns into *user-prompt groups* (each group = one
+  user turn + its following assistant turns until the next user turn), then
+  derive one phase candidate per group. Apply a two-pass merge:
+  - Pass 1: merge same-state neighbours when label-set Jaccard ≥ 0.1.
+  - Pass 2: if total phases > 8, force-merge same-state neighbours regardless
+    of Jaccard. This is the "cap" that keeps narratives skim-able.
+  - Flow display deduplicates consecutive identical master classes so a long
+    EVALUATION arc renders as `Verdictive` (not `Verdictive → Verdictive → …`).
+- **Consequences:** 22 → 7 phases on the same chat. Phase-boundary alignment
+  with human gold: 3/5 (60%). The two misses are topic-level pivots within
+  the same Exercitive class (e.g. "please do X" for implementation vs. for
+  format choice) — solvable with embedding-based topic detection, deferred.
+
 ---
 
-## 3. Format taxonomy
+## 5. Format taxonomy
 
 | Format | Role | When read | When written |
 |---|---|---|---|
@@ -216,7 +560,7 @@ real pi session: 100% turn count match, 100% parent_id match.
 
 ---
 
-## 4. Data model
+## 6. Data model
 
 ```
 chats (id, title, source, created_at, raw_path, session_id†)
@@ -239,10 +583,13 @@ artifacts (id, chat_id, kind, title, body, zk_id, turn_start..end, labels, file_
 - `turns_fts`: FTS5 index over `turns.content`. Includes thinking-block
   content (the `[thinking]` prefix is indexed as regular text, so
   `MATCH 'comparison'` finds reasoning traces).
+- `artifact_links`: was defined in the schema from day one but unused until
+  ADR-011 wired it. Populated by `_resolve_backlinks()` during extraction.
+  Read by `scripts/eval_backlinks.py` to score graph quality.
 
 ---
 
-## 5. Module dependency rules
+## 7. Module dependency rules
 
 ```
 cli ──▶ ingest ──▶ pi_import ──▶ schema ──▶ taxonomy
@@ -268,11 +615,23 @@ cli ──▶ ingest ──▶ pi_import ──▶ schema ──▶ taxonomy
   Depends on `db` only via the connection passed from `cli`.
 - `cli.py` is the only module that talks to the user (stdout/stderr).
 
+### Off-pipeline tools (`scripts/`)
+
+These scripts depend on `git_llm` but live outside the published CLI. They are
+user-facing utilities for evaluation and visualisation, not production code.
+
+- `scan_sessions.py` — keyword-based session scanner (ranks meta-test candidates).
+- `eval_kappa.py` — Cohen's κ between any two labelers (stub / LLM / human).
+- `eval_backlinks.py` — backlink graph quality (precision, recall, connectivity).
+- `eval_clusters.py` — cross-chat clustering by label Jaccard similarity.
+- `gen_session_view.py` — emits `session-view.json` for the HTML viewer.
+- `test_llm_labeler.sh` — smoke test for `LLMLabeler` end-to-end.
+
 ---
 
-## 6. Testing strategy
+## 8. Testing strategy
 
-- **104 tests**, all hermetic (fresh tmp SQLite per test via `tmp_db` fixture).
+- **66 tests**, all hermetic (fresh tmp SQLite per test via `tmp_db` fixture).
 - **Dogfood**: `docs/initial-conversation.md` (real conversation) and a
   synthetic `tests/fixtures/pi-session-mini.jsonl` covering all 4 pi line
   types + edge cases (unknown line types, malformed JSON).
@@ -288,7 +647,7 @@ cli ──▶ ingest ──▶ pi_import ──▶ schema ──▶ taxonomy
 
 ---
 
-## 7. Pipeline summary
+## 9. Pipeline summary
 
 ```
 gitllm ingest  <file.jsonl|json|md>   # single file, any format
@@ -305,9 +664,20 @@ gitllm export  <chat_id> chat.jsonl   # canonical JSONL snapshot
 gitllm convert chat.md chat.jsonl     # markdown → canonical JSONL
 ```
 
+### Evaluation (off-CLI, in `scripts/` and `docs/evaluation/`)
+
+```
+bash docs/evaluation/run.sh                       # full 7-scenario dogfood
+python scripts/scan_sessions.py --top 10          # rank sessions by signal
+python scripts/eval_kappa.py --db <db> --chat 2   # inter-labeler agreement
+python scripts/eval_backlinks.py --db <db> --chat 2   # graph quality
+python scripts/eval_clusters.py --dbs <a> <b> --chat-ids 2 1   # cross-chat
+python scripts/gen_session_view.py <db> 2 --embed  # static HTML viewer
+```
+
 ---
 
-## 8. Roadmap
+## 10. Roadmap
 
 ### v0.2 — Cost-per-artifact reporting
 With `usage.cost_usd` per turn (ADR-007) and artifact-to-turn ranges
@@ -331,14 +701,17 @@ The user's initial-conversation.md proposal introduced *Infelicity Reports*
 `[Pivoting]`. Mark those turn ranges as `is_infelicity = TRUE`. CLI:
 `gitllm infelicities <chat>`.
 
-### v0.3 — Inter-labeler agreement
-Run `StubLabeler` and `LLMLabeler` on the same chat, compute Cohen's κ per
-label. Surfaces taxonomy ambiguity.
+### v0.3 — Inter-labeler agreement — ✅ done (2026-06-28)
+`scripts/eval_kappa.py` computes Cohen's κ between any two labelers on the same
+turns: stub vs LLM, stub vs human gold, LLM vs human gold, plus master-class κ
+and a label-bias check. See ADR-011 context and `docs/evaluation/SPEC-unimplemented.md`.
 
-### v0.4 — Cross-chat backlink resolution
-Detect topic overlap between artifacts across chats and emit Obsidian
-`[[...]]` backlinks. Use FTS5 + embedding similarity (sentence-transformers
-optional dependency).
+### v0.4 — Cross-chat backlink resolution — partial (2026-06-28)
+Intra-chat backlinks are done (ADR-011: label-overlap, bidirectional, persisted
+to `artifact_links`). Cross-chat *clustering* via `scripts/eval_clusters.py` groups
+zettels from multiple chats by label Jaccard. **Remaining:** embedding-based
+similarity (sentence-transformers) for content-level (not label-level) overlap,
+and auto-emission of Obsidian `[[zk_id]]` syntax inside note bodies.
 
 ### v0.5 — MIDAS migration path
 Add `gitllm relabel --taxonomy midas` to re-tag every turn using the
