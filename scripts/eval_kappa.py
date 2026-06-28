@@ -185,9 +185,16 @@ def evaluate(
             (chat_id,),
         ).fetchall()
     ]
+    assistant_turns = [
+        r["idx"] for r in conn.execute(
+            "SELECT idx FROM turns WHERE chat_id = ? AND role = 'assistant' ORDER BY idx",
+            (chat_id,),
+        ).fetchall()
+    ]
 
     print(f"Total turns with labels: {len(common_indices)}")
     print(f"User turns: {len(user_turns)}")
+    print(f"Assistant turns: {len(assistant_turns)}")
 
     results: dict = {"labelers": labeler_names, "pairings": {}}
 
@@ -214,41 +221,45 @@ def evaluate(
         map_a = by_labeler.get(key_a, {})
         map_b = gold_map if key_b == "__gold__" else by_labeler.get(key_b, {})
 
-        # Primary: multiclass κ on user turns
-        primary_a = _to_multiclass_vector(user_turns, map_a, all_labels)
-        primary_b = _to_multiclass_vector(user_turns, map_b, all_labels)
-        kappa_primary = _cohens_kappa(primary_a, primary_b)
+        for role_name, turns in [("user", user_turns), ("assistant", assistant_turns)]:
+            if not turns:
+                continue
+            # Primary: multiclass κ
+            primary_a = _to_multiclass_vector(turns, map_a, all_labels)
+            primary_b = _to_multiclass_vector(turns, map_b, all_labels)
+            kappa_primary = _cohens_kappa(primary_a, primary_b)
 
-        # Master-class κ (coarser)
-        from git_llm.taxonomy import BY_NAME
-        def to_master(turns, lm):
-            mc_map = defaultdict(set)
-            for idx, labels in lm.items():
-                mc_map[idx] = {BY_NAME[l].master_class.value for l in labels if l in BY_NAME}
-            return mc_map
+            # Master-class κ (coarser)
+            from git_llm.taxonomy import BY_NAME
+            def to_master(turns, lm):
+                mc_map = defaultdict(set)
+                for idx, labels in lm.items():
+                    mc_map[idx] = {BY_NAME[l].master_class.value for l in labels if l in BY_NAME}
+                return mc_map
 
-        mc_a = to_master(user_turns, map_a)
-        mc_b = to_master(user_turns, map_b)
-        mc_classes = sorted({c.value for c in __import__('git_llm.taxonomy', fromlist=['MasterClass']).MasterClass})
-        mc_primary_a = _to_multiclass_vector(user_turns, mc_a, mc_classes)
-        mc_primary_b = _to_multiclass_vector(user_turns, mc_b, mc_classes)
-        kappa_mc = _cohens_kappa(mc_primary_a, mc_primary_b)
+            mc_a = to_master(turns, map_a)
+            mc_b = to_master(turns, map_b)
+            mc_classes = sorted({c.value for c in __import__('git_llm.taxonomy', fromlist=['MasterClass']).MasterClass})
+            mc_primary_a = _to_multiclass_vector(turns, mc_a, mc_classes)
+            mc_primary_b = _to_multiclass_vector(turns, mc_b, mc_classes)
+            kappa_mc = _cohens_kappa(mc_primary_a, mc_primary_b)
 
-        # Exact match rate
-        exact = _exact_match_rate(user_turns, map_a, map_b)
+            # Exact match rate
+            exact = _exact_match_rate(turns, map_a, map_b)
 
-        pairing = {
-            "kappa_primary": round(kappa_primary, 3),
-            "kappa_master_class": round(kappa_mc, 3),
-            "exact_match_rate": round(exact, 3),
-            "n_turns": len(user_turns),
-        }
-        results["pairings"][f"{name_a}_vs_{name_b}"] = pairing
+            pairing_key = f"{name_a}_vs_{name_b}_{role_name}"
+            pairing = {
+                "kappa_primary": round(kappa_primary, 3),
+                "kappa_master_class": round(kappa_mc, 3),
+                "exact_match_rate": round(exact, 3),
+                "n_turns": len(turns),
+            }
+            results["pairings"][pairing_key] = pairing
 
-        print(f"\n  {name_a:>6} vs {name_b:<6}:")
-        print(f"    Primary κ:      {kappa_primary:.3f}")
-        print(f"    Master-class κ: {kappa_mc:.3f}")
-        print(f"    Exact match:    {exact:.1%}")
+            print(f"\n  {name_a:>6} vs {name_b:<6} ({role_name}, {len(turns)} turns):")
+            print(f"    Primary κ:      {kappa_primary:.3f}")
+            print(f"    Master-class κ: {kappa_mc:.3f}")
+            print(f"    Exact match:    {exact:.1%}")
 
     # ── Label bias ──────────────────────────────────────────────────────
     if llm_key:
@@ -268,11 +279,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Compute inter-labeler agreement")
     parser.add_argument("--db", required=True, help="Path to git-llm SQLite database")
     parser.add_argument("--chat-id", type=int, required=True, help="Chat ID")
-    parser.add_argument("--gold", help="Path to human gold YAML file")
+    parser.add_argument("--gold", help="Path to human gold YAML file (user turns)")
+    parser.add_argument("--gold-assistant", help="Path to human gold YAML file (assistant turns)")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     args = parser.parse_args()
 
-    results = evaluate(args.db, args.chat_id, args.gold)
+    results = evaluate(args.db, args.chat_id, args.gold, args.gold_assistant)
 
     if args.json:
         print(json.dumps(results, indent=2))
