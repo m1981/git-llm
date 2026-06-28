@@ -42,6 +42,11 @@ class ExtractedArtifact:
     turn_end: int
     labels: list[str]
     file_path: Path | None = None
+    related: list[str] = None  # zk_ids of related artifacts (backlinks)
+
+    def __post_init__(self):
+        if self.related is None:
+            self.related = []
 
 
 def _labels_for_chat(conn: sqlite3.Connection, chat_id: int) -> dict[int, list[str]]:
@@ -209,6 +214,23 @@ def extract_adrs(conn: sqlite3.Connection, chat_id: int) -> list[ExtractedArtifa
     return artifacts
 
 
+def _resolve_backlinks(artifacts: list[ExtractedArtifact], min_shared: int = 2) -> int:
+    """Add bidirectional related: links between zettels sharing ≥min_shared labels.
+
+    Returns the number of links created.
+    """
+    n_links = 0
+    for i, a in enumerate(artifacts):
+        for j in range(i + 1, len(artifacts)):
+            b = artifacts[j]
+            shared = set(a.labels) & set(b.labels)
+            if len(shared) >= min_shared:
+                a.related.append(b.zk_id)
+                b.related.append(a.zk_id)
+                n_links += 1
+    return n_links
+
+
 def render_markdown(artifact: ExtractedArtifact, chat_id: int) -> str:
     frontmatter = {
         "id": artifact.zk_id,
@@ -218,6 +240,8 @@ def render_markdown(artifact: ExtractedArtifact, chat_id: int) -> str:
         "source_turns": list(range(artifact.turn_start, artifact.turn_end + 1)),
         "labels": sorted(set(artifact.labels)),
     }
+    if artifact.related:
+        frontmatter["related"] = sorted(set(artifact.related))
     fm = yaml.safe_dump(frontmatter, sort_keys=False).strip()
     return f"---\n{fm}\n---\n\n# {artifact.title}\n\n{artifact.body}\n"
 
@@ -252,6 +276,13 @@ def write_artifacts(
                 datetime.utcnow().isoformat(),
             ),
         )
+        # Persist backlinks to artifact_links table
+        for related_id in art.related:
+            conn.execute(
+                "INSERT OR IGNORE INTO artifact_links (artifact_id, linked_zk_id) "
+                "VALUES ((SELECT id FROM artifacts WHERE zk_id = ?), ?)",
+                (art.zk_id, related_id),
+            )
     conn.commit()
     return artifacts
 
@@ -260,4 +291,5 @@ def extract_all(
     conn: sqlite3.Connection, chat_id: int, out_dir: Path
 ) -> list[ExtractedArtifact]:
     artifacts = extract_knowledge(conn, chat_id) + extract_adrs(conn, chat_id)
+    _resolve_backlinks(artifacts)
     return write_artifacts(conn, chat_id, artifacts, out_dir)
