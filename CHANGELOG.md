@@ -58,6 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   22 phases → 5–7 on a 250-turn chat. Flow display deduplicates consecutive
   identical master classes.
 
+- **Knowledge extraction triggers** (`src/git_llm/taxonomy.py`). Added
+  `("Synthesizing",)` as a standalone knowledge trigger. In LLM-labeled
+  sessions, `Synthesizing` is a high-signal label that marks thinking blocks
+  where the model integrates multiple concepts into coherent conclusions.
+
+- **Thinking block extraction policy** (`src/git_llm/extract.py`).
+  `_is_knowledge_worthy()` is now label-aware: thinking blocks are promoted
+  to knowledge notes only if labeled with `Synthesizing`, `Pragmatic+Warning`,
+  or `Reflective`. This captures genuinely valuable reasoning (architectural
+  analysis, design synthesis) while filtering out raw reasoning traces.
+
 - **`label_chat()` signature** (`src/git_llm/label.py`). Now accepts an
   optional `role: str | None` parameter. When set, only turns matching that
   role are labeled. Existing callers with `role=None` are unaffected.
@@ -73,6 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doesn't exist.
 
 ### Fixed
+
+- **Pi session import crash on embedded `\r`** (`src/git_llm/pi_import.py`).
+  Changed `text.splitlines()` to `text.split("\n")` — `splitlines()` splits on
+  `\r` characters embedded inside JSON string values, breaking the parser on
+  sessions where content contains literal carriage returns.
 
 - **Extraction precision** (`src/git_llm/extract.py`). Added `_is_knowledge_worthy()`
   content filter: turns starting with `[thinking]` are now skipped entirely,

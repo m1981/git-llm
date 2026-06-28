@@ -110,11 +110,13 @@ def _is_knowledge_worthy(content: str, labels: list[str] | None = None) -> bool:
     # Thinking blocks without a strong knowledge label are noise.
     # Educational alone is too weak — the stub labeler assigns it to any
     # thinking block containing words like "concept" or "principle".
-    # Only Pragmatic+Warning (trade-off reasoning) and Reflective (retrospection)
-    # are strong enough signals that a thinking block contains durable knowledge.
+    # Synthesizing (multi-concept integration), Pragmatic+Warning (trade-off
+    # reasoning), and Reflective (retrospection) are strong enough signals
+    # that a thinking block contains durable knowledge.
     if _THINKING_RE.match(content.strip()) and labels:
         has_strong_trigger = (
-            ("Pragmatic" in labels and "Warning" in labels)
+            "Synthesizing" in labels
+            or ("Pragmatic" in labels and "Warning" in labels)
             or "Reflective" in labels
         )
         if not has_strong_trigger:

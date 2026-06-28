@@ -85,7 +85,8 @@ BY_NAME: dict[str, LabelSpec] = {s.name: s for s in LABELS}
 KNOWLEDGE_TRIGGERS: tuple[tuple[str, ...], ...] = (
     ("Educational",),
     ("Reflective",),
-    ("Pragmatic", "Warning"),
+    ("Synthesizing",),            # multi-concept integration — high signal
+    ("Pragmatic", "Warning"),     # trade-off reasoning with risk awareness
 )
 
 ADR_TRIGGER_SEQUENCES: tuple[tuple[tuple[str, ...], ...], ...] = (
