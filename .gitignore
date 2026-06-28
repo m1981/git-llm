@@ -11,6 +11,8 @@ build/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+.env
+scripts/.env
 .DS_Store
 zettel/
 .idea
