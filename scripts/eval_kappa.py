@@ -46,11 +46,20 @@ def _load_labels_by_labeler(
 
 
 def _load_gold(path: Path) -> dict[int, set[str]]:
-    """Load human gold labels from YAML. Returns {turn_idx: {labels}}."""
+    """Load human gold labels from YAML. Returns {turn_idx: {labels}}.
+
+    Supports two formats:
+      - 'turns' list with 'idx' and 'gold_labels' (assistant gold)
+      - 'prompts' list with 'n' and 'gold_labels' (user gold)
+    """
     data = yaml.safe_load(path.read_text())
     gold: dict[int, set[str]] = {}
-    for entry in data.get("turns", []):
-        gold[entry["idx"]] = set(entry.get("gold_labels", []))
+    entries = data.get("turns", data.get("prompts", []))
+    for entry in entries:
+        idx = entry.get("idx", entry.get("n"))
+        labels = entry.get("gold_labels", [])
+        if idx is not None and labels:
+            gold[idx] = set(labels)
     return gold
 
 
@@ -160,6 +169,7 @@ def evaluate(
     db_path: str,
     chat_id: int,
     gold_path: str | None = None,
+    gold_assistant_path: str | None = None,
 ) -> dict:
     """Run the full inter-labeler agreement evaluation."""
     conn = sqlite3.connect(db_path)
@@ -207,21 +217,48 @@ def evaluate(
 
     if stub_key and llm_key:
         pairs_to_compare.append(("stub", "llm", stub_key, llm_key))
+    if gold_path and llm_key:
+        pairs_to_compare.append(("llm", "human", llm_key, "__gold__"))
+    if gold_path and stub_key:
+        pairs_to_compare.append(("stub", "human", stub_key, "__gold__"))
 
     # Load gold if provided
-    gold_map = None
+    gold_user_map = None
+    gold_asst_map = None
     if gold_path:
-        gold_map = _load_gold(Path(gold_path))
-        if stub_key:
-            pairs_to_compare.append(("stub", "human", stub_key, "__gold__"))
-        if llm_key:
-            pairs_to_compare.append(("llm", "human", llm_key, "__gold__"))
+        gold_user_map = _load_gold(Path(gold_path))
+    if gold_assistant_path:
+        gold_asst_map = _load_gold(Path(gold_assistant_path))
 
     for name_a, name_b, key_a, key_b in pairs_to_compare:
         map_a = by_labeler.get(key_a, {})
-        map_b = gold_map if key_b == "__gold__" else by_labeler.get(key_b, {})
-
-        for role_name, turns in [("user", user_turns), ("assistant", assistant_turns)]:
+        for role_name, turns, gold_map in [
+            ("user", user_turns, gold_user_map),
+            ("assistant", assistant_turns, gold_asst_map),
+        ]:
+            if not turns:
+                continue
+            if key_b == "__gold__":
+                if gold_map is None:
+                    continue
+                map_b = gold_map
+                # Intersect: only compare turns present in both labeler and gold
+                common = [t for t in turns if t in map_b or any(t == k for k in map_b)]
+                if not common:
+                    # Gold uses n (prompt number), not turn idx — try sequential mapping
+                    gold_sorted = sorted(gold_map.keys())
+                    turn_sorted = sorted(turns)
+                    if len(gold_sorted) <= len(turn_sorted):
+                        # Map gold n=1→first turn, n=2→second turn, etc.
+                        remapped = {}
+                        for gi, gkey in enumerate(gold_sorted):
+                            if gi < len(turn_sorted):
+                                remapped[turn_sorted[gi]] = gold_map[gkey]
+                        map_b = remapped
+                        common = [t for t in turns if t in map_b]
+                turns = common
+            else:
+                map_b = by_labeler.get(key_b, {})
             if not turns:
                 continue
             # Primary: multiclass κ

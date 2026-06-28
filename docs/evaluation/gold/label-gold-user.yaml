@@ -1,0 +1,66 @@
+session_id: 019f0b65-149c-7528-8c8b-1f754cc9d84a
+evaluator: human
+instructions: For each user prompt, assign 1-3 USER labels from the dictionary.
+user_labels:
+- Inquiring
+- Scenario-Setting
+- Providing-Context
+- Clarifying
+- Deep-Diving
+- Directing
+- Pivoting
+- Seeking-Validation
+- Challenging
+- Reflective
+turns:
+- idx: 0
+  content_preview: Please tellm what are those concepts about
+  gold_labels:
+  - Inquiring
+  - Clarifying
+- idx: 2
+  content_preview: 'Please look on my problem (uaser) and AI thinking and tell me is guiding into a '
+  gold_labels:
+  - Seeking-Validation
+  - Challenging
+- idx: 6
+  content_preview: yes, please act as professional software architect and developer and proceed.
+  gold_labels:
+  - Directing
+- idx: 19
+  content_preview: btw. is this markdown format is not too fragile as an source format. How about j
+  gold_labels:
+  - Challenging
+  - Pivoting
+- idx: 31
+  content_preview: Please check such jsonl structure and tell me does it have any advantages or you
+  gold_labels:
+  - Providing-Context
+  - Inquiring
+- idx: 39
+  content_preview: Please think and do use write tool in parallel to write most changes at once. th
+  gold_labels:
+  - Directing
+- idx: 46
+  content_preview: Pleas do one turn in parallel write  for c) as before
+  gold_labels:
+  - Directing
+- idx: 55
+  content_preview: so do we use still use canonical format or you alwasy read form pi json?
+  gold_labels:
+  - Clarifying
+- idx: 65
+  content_preview: Please check @docs/architecture.md is up to date and contains all above reflecti
+  gold_labels:
+  - Directing
+  - Reflective
+- idx: 86
+  content_preview: Please think deeply and captrue to a markdown file a value prorposition and user
+  gold_labels:
+  - Directing
+  - Reflective
+- idx: 90
+  content_preview: Great, think deeply how would you design evaluation process and format convenien
+  gold_labels:
+  - Directing
+  - Reflective
