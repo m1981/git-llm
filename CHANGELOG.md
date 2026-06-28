@@ -86,6 +86,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-chat clustering — each with rubric criteria, gold data format,
   runnable test, and implementation plan.
 
+- **Architecture overview** (`docs/architecture.md`, section 2). Names the
+  12 design patterns used throughout the codebase (Value Objects, Repository
+  + Unit of Work, Adapter, Strategy, Specification, Pipeline, Bidirectional
+  Link, Additive Migration, Idempotency Key, Two-Pass Merge, Single Source
+  of Truth, Facade). Includes an ASCII component map and five deliberate
+  non-decisions.
+
+- **5 Mermaid sequence diagrams** (`docs/architecture.md`, section 3).
+  Covers the five dominant runtime flows:
+  - 3.1 Bulk pi-session import (idempotent, dedup on `session_id`)
+  - 3.2 Labeling with role filter (stub vs LLM, JSON-fence stripping)
+  - 3.3 Phase compression (user-prompt grouping + two-pass Jaccard merge)
+  - 3.4 Knowledge extraction with backlink resolution (4-stage pipeline)
+  - 3.5 Search (incremental FTS5 + label + master-class filter builder)
+
+- **ADR-011: Bidirectional backlinks via label overlap**. Pairs sharing
+  ≥2 labels get bidirectional links; persisted to the previously unused
+  `artifact_links` table. 42 links on dogfood corpus, 100% precision.
+
+- **ADR-012: Thinking-block extraction needs a strong-trigger gate**.
+  Thinking blocks promoted only if labeled `Synthesizing`, `Pragmatic+Warning`,
+  or `Reflective`. Documents the 38% → 100% precision improvement and the
+  thinking-block recall challenge on tool-heavy sessions.
+
+- **ADR-013: Phase compression groups by user prompt, not raw turn**.
+  User-prompt grouping + two-pass merge (Jaccard 0.1 pass + force-merge cap
+  at 8). Documents the 22→7 phase reduction and the topic-pivot blind spot.
+
 ### Changed
 
 - **Phase compression algorithm** (`src/git_llm/phases.py`). Completely rewritten.
@@ -119,6 +147,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/evaluation/run.sh`** resolved by `chat_id` by querying the chat
   with the most user turns, rather than parsing CLI JSON output that
   doesn't exist.
+
+- **Architecture documentation** (`docs/architecture.md`). Updated data model
+  to note `artifact_links` is now wired (ADR-011). Module dependency rules
+  expanded with off-pipeline tools (`scripts/eval_kappa.py`, `eval_backlinks.py`,
+  `eval_clusters.py`, `scan_sessions.py`, `gen_session_view.py`). Test count
+  corrected from 104 to 66. Pipeline summary extended with evaluation commands.
+  Roadmap updated: v0.3 (inter-labeler agreement) marked done, v0.4 (cross-chat
+  backlinks) marked partial.
 
 ### Fixed
 
