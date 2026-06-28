@@ -12,6 +12,7 @@ build/
 *.sqlite-wal
 *.sqlite-shm
 .env
+**/.env
 scripts/.env
 .DS_Store
 zettel/
