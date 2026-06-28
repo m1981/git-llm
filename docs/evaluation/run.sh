@@ -145,8 +145,8 @@ if [[ -n "${CHAT_ID}" ]]; then
   [[ -n "${OPENAI_API_KEY:-}" ]] && HAS_KEY=true
 
   if $HAS_KEY; then
-    log "  Using LLM model: ${LLM_MODEL}"
-    gitllm label "${CHAT_ID}" --model "${LLM_MODEL}" --db "${GITLLM_DB}" \
+    log "  Using LLM model: ${LLM_MODEL} (user turns only)"
+    gitllm label "${CHAT_ID}" --model "${LLM_MODEL}" --role user --db "${GITLLM_DB}" \
       > "${RUN_DIR}/02-llm-labels.log" 2>&1
 
     gitllm export "${CHAT_ID}" "${RUN_DIR}/02-llm-labels.jsonl" --db "${GITLLM_DB}" \

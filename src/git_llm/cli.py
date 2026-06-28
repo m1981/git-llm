@@ -53,17 +53,21 @@ def label(
     model: str = typer.Option(
         "stub", "--model", help="'stub' for offline heuristic; otherwise a LiteLLM model id (e.g. gpt-4o-mini)."
     ),
+    role: str = typer.Option(
+        None, "--role", help="Only label turns with this role ('user' or 'assistant'). Omit for all."
+    ),
     db: Path = typer.Option(None, "--db"),
 ) -> None:
-    """Label every turn in a chat."""
+    """Label turns in a chat (optionally filtered by role)."""
     labeler: label_mod.Labeler
     if model == "stub":
         labeler = label_mod.StubLabeler()
     else:
         labeler = label_mod.LLMLabeler(model=model)
     with db_mod.session(db) as conn:
-        n = label_mod.label_chat(conn, chat_id, labeler)
-    console.print(f"[green]✓[/] Wrote {n} labels for chat {chat_id} using {labeler.name}")
+        n = label_mod.label_chat(conn, chat_id, labeler, role=role)
+    scope = f" ({role}-only)" if role else ""
+    console.print(f"[green]✓[/] Wrote {n} labels for chat {chat_id}{scope} using {labeler.name}")
 
 
 @app.command(name="search")
