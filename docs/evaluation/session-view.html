@@ -147,6 +147,10 @@ mark { background: #fef08a; padding: 1px 2px; border-radius: 2px; }
 
 <!-- Sidebar -->
 <aside class="sidebar">
+  <div style="padding:0 16px 12px;display:flex;gap:8px">
+    <a href="search.html" style="font-size:11px;color:var(--accent);text-decoration:none">← Search</a>
+    <a href="index.html" style="font-size:11px;color:var(--fg-faint);text-decoration:none">Gallery</a>
+  </div>
   <div class="session-title" id="sessionTitle">Loading…</div>
   <div class="session-meta" id="sessionMeta"></div>
 
@@ -165,7 +169,7 @@ mark { background: #fef08a; padding: 1px 2px; border-radius: 2px; }
 <header class="topbar">
   <div class="search-box">
     <span class="search-icon">⌕</span>
-    <input type="text" id="searchInput" placeholder="Search turns…" autocomplete="off">
+    <input type="text" id="searchInput" placeholder="Search turns… (content, labels, session)" autocomplete="off">
   </div>
   <div class="stats" id="stats"></div>
   <div class="filter-toggles">
